@@ -14,8 +14,15 @@ import {
   type Vec3,
 } from '@/lib/schema';
 import {
+  computeProactiveSuggestion,
+  generateValidatedLayouts,
+  type LayoutOption,
+  type ProactiveSuggestion,
+} from '@/lib/layoutSuggestions';
+import {
   applyPoseToScene,
   findValidatedAlternative,
+  type PreviewObjectDelta,
   type VoicePreviewState,
 } from '@/lib/voiceActions';
 
@@ -120,6 +127,14 @@ export interface SceneStoreState {
   editEpoch: number;
   /** Internal snapshot taken at start of manual drag so a drag commits as one undo step */
   dragStartSnapshot: ShopScene | null;
+  /** Up to 3 validated, genuinely different room layout suggestions with stable indices */
+  layoutOptions: LayoutOption[];
+  /** Current proactive improvement suggestion (spoken once user finishes dragging/speaking) */
+  proactiveSuggestion: ProactiveSuggestion | null;
+  /** Fingerprints of dismissed suggestions so they are not repeated unless context changes */
+  dismissedSuggestionKeys: string[];
+  /** Incremented whenever a new proactive suggestion is generated for voice announcement */
+  proactiveTick: number;
 
   hydrateFromStorage: () => void;
   selectObject: (id: string | null) => void;
@@ -157,6 +172,12 @@ export interface SceneStoreState {
   commitVoicePreview: () => boolean;
   cancelVoicePreview: () => void;
   undo: () => boolean;
+  generateLayoutOptions: () => LayoutOption[];
+  previewLayoutOption: (optionIndex: number) => ApplyVoicePreviewOutcome;
+  clearLayoutOptions: () => void;
+  evaluateProactiveSuggestion: (lastEditedObjectId?: string | null) => ProactiveSuggestion | null;
+  previewProactiveSuggestion: () => ApplyVoicePreviewOutcome;
+  dismissProactiveSuggestion: () => void;
 }
 
 const MAX_UNDO_HISTORY = 30;
@@ -191,6 +212,10 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
   voiceHighlightIds: [],
   editEpoch: 0,
   dragStartSnapshot: null,
+  layoutOptions: [],
+  proactiveSuggestion: null,
+  dismissedSuggestionKeys: [],
+  proactiveTick: 0,
 
   hydrateFromStorage: () => {
     if (typeof window === 'undefined') {
@@ -241,8 +266,12 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
       if (state.selectedId === id) {
         return state;
       }
+      // Keep multi-object layout previews alive when user selects an object to refine it
+      const isLayoutPreview = Boolean(state.voicePreview?.objectPoses);
       const previewStale =
-        state.voicePreview && id !== state.voicePreview.objectId;
+        !isLayoutPreview &&
+        state.voicePreview &&
+        id !== state.voicePreview.objectId;
       return {
         selectedId: id,
         voiceHighlightIds: [],
@@ -260,23 +289,42 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
           dragStartSnapshot: cloneScene(state.scene),
           voicePreview: null,
           voiceHighlightIds: [],
+          proactiveSuggestion: null,
           editEpoch: state.editEpoch + 1,
         };
       }
 
-      // Finishing manual drag: push dragStartSnapshot onto undoStack if moved
+      // Finishing manual drag: push dragStartSnapshot onto undoStack if moved,
+      // and evaluate whether there is a meaningful proactive suggestion
       let nextUndoStack = state.undoStack;
+      let moved = false;
       if (state.dragStartSnapshot) {
         const beforeJson = JSON.stringify(state.dragStartSnapshot.objects);
         const afterJson = JSON.stringify(state.scene.objects);
         if (beforeJson !== afterJson) {
+          moved = true;
           nextUndoStack = pushUndoSnapshot(state.undoStack, state.dragStartSnapshot);
         }
       }
+
+      const nextEpoch = moved ? state.editEpoch + 1 : state.editEpoch;
+      const suggestion = moved
+        ? computeProactiveSuggestion(
+            state.scene,
+            state.validator,
+            state.dismissedSuggestionKeys,
+            nextEpoch,
+            state.selectedId
+          )
+        : state.proactiveSuggestion;
+
       return {
         isDragging: false,
         dragStartSnapshot: null,
         undoStack: nextUndoStack,
+        editEpoch: nextEpoch,
+        proactiveSuggestion: suggestion,
+        proactiveTick: suggestion ? state.proactiveTick + 1 : state.proactiveTick,
       };
     });
   },
@@ -582,12 +630,16 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
       };
     }
 
-    const originalPosition: Vec3 =
-      state.voicePreview?.objectId === objectId
+    const existingMultiPoses = state.voicePreview?.objectPoses;
+    const existingDelta = existingMultiPoses?.[objectId];
+    const originalPosition: Vec3 = existingDelta
+      ? [...existingDelta.originalPosition]
+      : state.voicePreview?.objectId === objectId
         ? [...state.voicePreview.originalPosition]
         : [...target.position];
-    const originalRotationY =
-      state.voicePreview?.objectId === objectId
+    const originalRotationY = existingDelta
+      ? existingDelta.originalRotationY
+      : state.voicePreview?.objectId === objectId
         ? state.voicePreview.originalRotationY
         : target.rotationY;
 
@@ -596,17 +648,49 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
       nextPosition[1],
       nextPosition[2],
     ];
-    const hypotheticalScene = applyPoseToScene(
-      state.scene,
-      objectId,
-      previewPos,
-      nextRotationY
-    );
+
+    // If refining an object while a multi-object layout preview is active,
+    // preserve all other objects in that layout preview!
+    let nextObjectPoses: Record<string, PreviewObjectDelta> | undefined;
+    let hypotheticalScene: ShopScene;
+
+    if (existingMultiPoses) {
+      nextObjectPoses = {
+        ...existingMultiPoses,
+        [objectId]: {
+          originalPosition,
+          originalRotationY,
+          previewPosition: previewPos,
+          previewRotationY: nextRotationY,
+        },
+      };
+      hypotheticalScene = {
+        ...state.scene,
+        objects: state.scene.objects.map((o) => {
+          const delta = nextObjectPoses?.[o.id];
+          return delta
+            ? {
+                ...o,
+                position: [...delta.previewPosition],
+                rotationY: delta.previewRotationY,
+              }
+            : o;
+        }),
+      };
+    } else {
+      hypotheticalScene = applyPoseToScene(
+        state.scene,
+        objectId,
+        previewPos,
+        nextRotationY
+      );
+    }
+
     const previewIssues = state.validator(hypotheticalScene);
     const hasBlockingError = previewIssues.some((i) => i.severity === 'error');
     const suggestedAlternative = hasBlockingError
       ? findValidatedAlternative(
-          state.scene,
+          hypotheticalScene,
           objectId,
           previewPos,
           state.validator
@@ -619,6 +703,13 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
       originalRotationY,
       previewPosition: previewPos,
       previewRotationY: nextRotationY,
+      ...(nextObjectPoses ? { objectPoses: nextObjectPoses } : {}),
+      ...(state.voicePreview?.layoutOptionIndex
+        ? {
+            layoutOptionIndex: state.voicePreview.layoutOptionIndex,
+            layoutOptionName: state.voicePreview.layoutOptionName,
+          }
+        : {}),
       issues: previewIssues,
       frozen: false,
       suggestedAlternative,
@@ -630,6 +721,7 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
       selectedId: objectId,
       voicePreview: nextPreview,
       voiceHighlightIds: [],
+      proactiveSuggestion: null,
     });
 
     return {
@@ -681,21 +773,47 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
     }
 
     const nextUndoStack = pushUndoSnapshot(state.undoStack, state.scene);
-    const nextScene = applyPoseToScene(
-      state.scene,
-      preview.objectId,
-      preview.previewPosition,
-      preview.previewRotationY
-    );
+    const nextScene: ShopScene = preview.objectPoses
+      ? {
+          ...state.scene,
+          objects: state.scene.objects.map((o) => {
+            const delta = preview.objectPoses?.[o.id];
+            return delta
+              ? {
+                  ...o,
+                  position: [...delta.previewPosition],
+                  rotationY: delta.previewRotationY,
+                }
+              : o;
+          }),
+        }
+      : applyPoseToScene(
+          state.scene,
+          preview.objectId,
+          preview.previewPosition,
+          preview.previewRotationY
+        );
+
     persistSceneState(state.activePreset, nextScene);
+    const nextEpoch = state.editEpoch + 1;
+    const suggestion = computeProactiveSuggestion(
+      nextScene,
+      state.validator,
+      state.dismissedSuggestionKeys,
+      nextEpoch,
+      preview.objectId
+    );
 
     set({
       scene: nextScene,
       undoStack: nextUndoStack,
       voicePreview: null,
       voiceHighlightIds: [],
-      editEpoch: state.editEpoch + 1,
+      layoutOptions: [],
+      editEpoch: nextEpoch,
       issues: state.validator(nextScene),
+      proactiveSuggestion: suggestion,
+      proactiveTick: suggestion ? state.proactiveTick + 1 : state.proactiveTick,
     });
 
     return true;
@@ -725,6 +843,7 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
       undoStack: nextUndoStack,
       voicePreview: null,
       voiceHighlightIds: [],
+      proactiveSuggestion: null,
       isDragging: false,
       dragStartSnapshot: null,
       editEpoch: state.editEpoch + 1,
@@ -732,5 +851,164 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
     });
 
     return true;
+  },
+
+  generateLayoutOptions: () => {
+    const state = get();
+    const options = generateValidatedLayouts(state.scene, state.validator);
+    set({
+      layoutOptions: options,
+      proactiveSuggestion: null,
+    });
+    return options;
+  },
+
+  previewLayoutOption: (optionIndex) => {
+    const state = get();
+    let options = state.layoutOptions;
+    if (options.length === 0) {
+      options = generateValidatedLayouts(state.scene, state.validator);
+    }
+
+    const chosen = options.find((opt) => opt.index === optionIndex);
+    if (!chosen) {
+      return {
+        applied: false,
+        reason: `Layout option ${optionIndex} is not available (${options.length} feasible option${options.length === 1 ? '' : 's'}).`,
+        preview: state.voicePreview,
+      };
+    }
+
+    const objectPoses: Record<string, PreviewObjectDelta> = {};
+    for (const id of chosen.movedObjectIds) {
+      const orig = state.scene.objects.find((o) => o.id === id);
+      const nextPose = chosen.poses[id];
+      if (!orig || !nextPose) continue;
+      objectPoses[id] = {
+        originalPosition: [...orig.position],
+        originalRotationY: orig.rotationY,
+        previewPosition: [...nextPose.position],
+        previewRotationY: nextPose.rotationY,
+      };
+    }
+
+    const primaryId =
+      chosen.movedObjectIds[0] ?? state.scene.objects[0]?.id ?? '';
+    const primaryDelta = objectPoses[primaryId];
+    if (!primaryDelta) {
+      return {
+        applied: false,
+        reason: 'Selected layout option has no movable fixtures.',
+        preview: state.voicePreview,
+      };
+    }
+
+    const hypotheticalScene: ShopScene = {
+      ...state.scene,
+      objects: state.scene.objects.map((o) => {
+        const delta = objectPoses[o.id];
+        return delta
+          ? {
+              ...o,
+              position: [...delta.previewPosition],
+              rotationY: delta.previewRotationY,
+            }
+          : o;
+      }),
+    };
+    const previewIssues = state.validator(hypotheticalScene);
+
+    const nextPreview: VoicePreviewState = {
+      objectId: primaryId,
+      originalPosition: primaryDelta.originalPosition,
+      originalRotationY: primaryDelta.originalRotationY,
+      previewPosition: primaryDelta.previewPosition,
+      previewRotationY: primaryDelta.previewRotationY,
+      objectPoses,
+      layoutOptionIndex: chosen.index,
+      layoutOptionName: chosen.name,
+      issues: previewIssues,
+      frozen: false,
+      suggestedAlternative: null,
+      lastActionSummary: `Previewing Option ${chosen.index}: ${chosen.name} (${chosen.movedObjectIds.length} items)`,
+      epoch: state.editEpoch,
+    };
+
+    set({
+      layoutOptions: options,
+      selectedId: primaryId,
+      voicePreview: nextPreview,
+      voiceHighlightIds: [],
+      proactiveSuggestion: null,
+    });
+
+    return {
+      applied: true,
+      preview: nextPreview,
+    };
+  },
+
+  clearLayoutOptions: () => {
+    set({ layoutOptions: [] });
+  },
+
+  evaluateProactiveSuggestion: (lastEditedObjectId) => {
+    const state = get();
+    const suggestion = computeProactiveSuggestion(
+      state.scene,
+      state.validator,
+      state.dismissedSuggestionKeys,
+      state.editEpoch,
+      lastEditedObjectId ?? state.selectedId
+    );
+    set({
+      proactiveSuggestion: suggestion,
+      proactiveTick: suggestion ? state.proactiveTick + 1 : state.proactiveTick,
+    });
+    return suggestion;
+  },
+
+  previewProactiveSuggestion: () => {
+    const state = get();
+    const suggestion = state.proactiveSuggestion;
+    if (!suggestion) {
+      return {
+        applied: false,
+        reason: 'There is no active suggestion to preview right now.',
+        preview: state.voicePreview,
+      };
+    }
+
+    if (suggestion.createdEpoch !== state.editEpoch) {
+      set({ proactiveSuggestion: null });
+      return {
+        applied: false,
+        stale: true,
+        reason: 'Discarded outdated suggestion after manual room change.',
+        preview: state.voicePreview,
+      };
+    }
+
+    return get().applyVoicePreview(
+      suggestion.objectId,
+      suggestion.targetPosition,
+      suggestion.targetRotationY,
+      `Previewing suggestion: ${suggestion.title}`,
+      suggestion.createdEpoch
+    );
+  },
+
+  dismissProactiveSuggestion: () => {
+    set((state) => {
+      if (!state.proactiveSuggestion) return state;
+      const fp = state.proactiveSuggestion.fingerprint;
+      const nextDismissed = state.dismissedSuggestionKeys.includes(fp)
+        ? state.dismissedSuggestionKeys
+        : [...state.dismissedSuggestionKeys, fp];
+      return {
+        proactiveSuggestion: null,
+        dismissedSuggestionKeys: nextDismissed,
+      };
+    });
   },
 }));
