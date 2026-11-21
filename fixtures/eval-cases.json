@@ -1,0 +1,593 @@
+{
+  "meta": {
+    "description": "8 independent small-store spatial & budget evaluation scenarios for SpaceStage. Coordinates follow lib/schema.ts conventions: meters, Y-up, floor centered at (0, 0) with X in [-width/2, +width/2] and Z in [-depth/2, +depth/2]. ProductRef records in these unit-test fixtures use .example.com placeholder URLs strictly for deterministic budget/ownership math — never treat them as live Shopify catalog traces.",
+    "coordinateSystem": {
+      "units": "meters",
+      "origin": "center",
+      "upAxis": "Y",
+      "floorPlane": "XZ",
+      "ftToMeters": 0.3048
+    }
+  },
+  "cases": [
+    {
+      "id": "eval-01-fits",
+      "category": "fits",
+      "title": "Valid 12x10 ft skincare boutique within $400 budget and 3 ft walkway",
+      "expected": {
+        "valid": true,
+        "errorCodes": [],
+        "warningCodes": [],
+        "affectedErrorObjectIds": [],
+        "newPurchaseCents": 33500
+      },
+      "scene": {
+        "room": {
+          "width": 3.6576,
+          "depth": 3.048,
+          "height": 2.7432,
+          "entrance": {
+            "wall": "south",
+            "offset": 0,
+            "width": 0.9144
+          }
+        },
+        "purpose": "Compact neighborhood skincare boutique",
+        "style": "Modern minimal white oak and travertine",
+        "budgetCents": 40000,
+        "minWalkwayWidth": 0.9144,
+        "noDrilling": true,
+        "warnings": [],
+        "objects": [
+          {
+            "id": "owned-counter-north",
+            "kind": "counter",
+            "label": "Owned Checkout Counter",
+            "source": "owned",
+            "position": [0.95, 0, -1.18],
+            "size": [1.3, 0.95, 0.52],
+            "rotationY": 0,
+            "dimensionsVerified": true
+          },
+          {
+            "id": "owned-shelf-west",
+            "kind": "shelf",
+            "label": "Owned White Oak Display Shelf",
+            "source": "owned",
+            "position": [-1.56, 0, -0.2],
+            "size": [1.4, 2.0, 0.4],
+            "rotationY": 1.5707963267948966,
+            "dimensionsVerified": true
+          },
+          {
+            "id": "shopify-table-east",
+            "kind": "table",
+            "label": "Minimalist Skincare Tester Table",
+            "source": "shopify",
+            "position": [1.32, 0, 0.25],
+            "size": [0.8, 0.85, 0.5],
+            "rotationY": -1.5707963267948966,
+            "dimensionsVerified": true,
+            "product": {
+              "title": "Minimalist Oak Display Table (Synthetic Test Fixture)",
+              "seller": "Fixture Test Co",
+              "sellerDomain": "fixture-test.example.com",
+              "productId": "gid://shopify/Product/1001",
+              "variantId": "gid://shopify/ProductVariant/2001",
+              "priceCents": 22000,
+              "currency": "USD",
+              "productUrl": "https://fixture-test.example.com/products/minimalist-oak-display-table",
+              "available": true
+            }
+          },
+          {
+            "id": "shopify-lamp-nw",
+            "kind": "lamp",
+            "label": "Warm Linen Column Floor Lamp",
+            "source": "shopify",
+            "position": [-1.45, 0, -1.18],
+            "size": [0.42, 1.68, 0.42],
+            "rotationY": 0,
+            "dimensionsVerified": true,
+            "product": {
+              "title": "Warm Linen Column Floor Lamp (Synthetic Test Fixture)",
+              "seller": "Lighting Test Studio",
+              "sellerDomain": "lighting-test.example.com",
+              "productId": "gid://shopify/Product/1002",
+              "variantId": "gid://shopify/ProductVariant/2002",
+              "priceCents": 11500,
+              "currency": "USD",
+              "productUrl": "https://lighting-test.example.com/products/warm-linen-floor-lamp",
+              "available": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "eval-02-collisions",
+      "category": "collisions",
+      "title": "Rotated counter and display table footprints intersect in NW quadrant",
+      "expected": {
+        "valid": false,
+        "errorCodes": ["COLLISION"],
+        "warningCodes": [],
+        "affectedErrorObjectIds": ["owned-counter-nw", "shopify-table-overlap"],
+        "newPurchaseCents": 18500
+      },
+      "scene": {
+        "room": {
+          "width": 3.6576,
+          "depth": 3.048,
+          "height": 2.7432,
+          "entrance": {
+            "wall": "south",
+            "offset": 0,
+            "width": 0.9144
+          }
+        },
+        "purpose": "Compact skincare pop-up",
+        "style": "Warm wood and stone",
+        "budgetCents": 40000,
+        "minWalkwayWidth": 0.9144,
+        "noDrilling": true,
+        "warnings": [],
+        "objects": [
+          {
+            "id": "owned-counter-nw",
+            "kind": "counter",
+            "label": "Angled Owned Consultation Counter",
+            "source": "owned",
+            "position": [-0.9, 0, -0.85],
+            "size": [1.4, 0.95, 0.55],
+            "rotationY": 0.5235987755982988,
+            "dimensionsVerified": true
+          },
+          {
+            "id": "shopify-table-overlap",
+            "kind": "table",
+            "label": "Angled Product Pedestal Table",
+            "source": "shopify",
+            "position": [-0.35, 0, -0.65],
+            "size": [1.1, 0.85, 0.6],
+            "rotationY": -0.5235987755982988,
+            "dimensionsVerified": true,
+            "product": {
+              "title": "Angled Product Pedestal Table (Synthetic Test Fixture)",
+              "seller": "Fixture Test Co",
+              "sellerDomain": "fixture-test.example.com",
+              "productId": "gid://shopify/Product/1003",
+              "variantId": "gid://shopify/ProductVariant/2003",
+              "priceCents": 18500,
+              "currency": "USD",
+              "productUrl": "https://fixture-test.example.com/products/angled-pedestal-table",
+              "available": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "eval-03-blocked-entrance",
+      "category": "blocked-entrance",
+      "title": "Freestanding garment/product rack placed inside 3 ft south entrance clearance zone",
+      "expected": {
+        "valid": false,
+        "errorCodes": ["BLOCKED_PATH"],
+        "warningCodes": [],
+        "affectedErrorObjectIds": ["shopify-rack-doorway"],
+        "newPurchaseCents": 16000
+      },
+      "scene": {
+        "room": {
+          "width": 3.6576,
+          "depth": 3.048,
+          "height": 2.7432,
+          "entrance": {
+            "wall": "south",
+            "offset": 0,
+            "width": 0.9144
+          }
+        },
+        "purpose": "Skincare and beauty merch booth",
+        "style": "Clean modern retail",
+        "budgetCents": 40000,
+        "minWalkwayWidth": 0.9144,
+        "noDrilling": true,
+        "warnings": [],
+        "objects": [
+          {
+            "id": "owned-counter-north",
+            "kind": "counter",
+            "label": "Owned Checkout Counter",
+            "source": "owned",
+            "position": [0.95, 0, -1.18],
+            "size": [1.3, 0.95, 0.52],
+            "rotationY": 0,
+            "dimensionsVerified": true
+          },
+          {
+            "id": "shopify-rack-doorway",
+            "kind": "rack",
+            "label": "Entryway Feature Display Rack",
+            "source": "shopify",
+            "position": [0, 0, 1.12],
+            "size": [1.2, 1.65, 0.5],
+            "rotationY": 0,
+            "dimensionsVerified": true,
+            "product": {
+              "title": "Entryway Feature Display Rack (Synthetic Test Fixture)",
+              "seller": "Rack Test Supply",
+              "sellerDomain": "rack-test.example.com",
+              "productId": "gid://shopify/Product/1004",
+              "variantId": "gid://shopify/ProductVariant/2004",
+              "priceCents": 16000,
+              "currency": "USD",
+              "productUrl": "https://rack-test.example.com/products/entryway-display-rack",
+              "available": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "eval-04-reduced-budget",
+      "category": "reduced-budget",
+      "title": "Reduced $150 new-purchase cap exceeded by $228 in selected fixtures",
+      "expected": {
+        "valid": false,
+        "errorCodes": ["OVER_BUDGET"],
+        "warningCodes": [],
+        "affectedErrorObjectIds": ["shopify-table-east", "shopify-lamp-nw"],
+        "newPurchaseCents": 22800
+      },
+      "scene": {
+        "room": {
+          "width": 3.6576,
+          "depth": 3.048,
+          "height": 2.7432,
+          "entrance": {
+            "wall": "south",
+            "offset": 0,
+            "width": 0.9144
+          }
+        },
+        "purpose": "Micro pop-up refresh on tight budget",
+        "style": "Minimal natural wood",
+        "budgetCents": 15000,
+        "minWalkwayWidth": 0.9144,
+        "noDrilling": true,
+        "warnings": [],
+        "objects": [
+          {
+            "id": "owned-shelf-west",
+            "kind": "shelf",
+            "label": "Owned Oak Wall Shelf",
+            "source": "owned",
+            "position": [-1.56, 0, -0.2],
+            "size": [1.4, 2.0, 0.4],
+            "rotationY": 1.5707963267948966,
+            "dimensionsVerified": true
+          },
+          {
+            "id": "shopify-table-east",
+            "kind": "table",
+            "label": "Compact Display Table",
+            "source": "shopify",
+            "position": [1.32, 0, 0.25],
+            "size": [0.8, 0.85, 0.5],
+            "rotationY": -1.5707963267948966,
+            "dimensionsVerified": true,
+            "product": {
+              "title": "Compact Display Table (Synthetic Test Fixture)",
+              "seller": "Fixture Test Co",
+              "sellerDomain": "fixture-test.example.com",
+              "productId": "gid://shopify/Product/1005",
+              "variantId": "gid://shopify/ProductVariant/2005",
+              "priceCents": 14900,
+              "currency": "USD",
+              "productUrl": "https://fixture-test.example.com/products/compact-display-table",
+              "available": true
+            }
+          },
+          {
+            "id": "shopify-lamp-nw",
+            "kind": "lamp",
+            "label": " matte Brass Accent Floor Lamp",
+            "source": "shopify",
+            "position": [-1.45, 0, -1.18],
+            "size": [0.42, 1.68, 0.42],
+            "rotationY": 0,
+            "dimensionsVerified": true,
+            "product": {
+              "title": "Matte Brass Accent Floor Lamp (Synthetic Test Fixture)",
+              "seller": "Lighting Test Studio",
+              "sellerDomain": "lighting-test.example.com",
+              "productId": "gid://shopify/Product/1006",
+              "variantId": "gid://shopify/ProductVariant/2006",
+              "priceCents": 7900,
+              "currency": "USD",
+              "productUrl": "https://lighting-test.example.com/products/matte-brass-floor-lamp",
+              "available": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "eval-05-missing-dimensions",
+      "category": "missing-dimensions",
+      "title": "Uncalibrated camera observation and unverified proposal emit UNVERIFIED_DIMENSIONS warning",
+      "expected": {
+        "valid": true,
+        "errorCodes": [],
+        "warningCodes": ["UNVERIFIED_DIMENSIONS"],
+        "affectedErrorObjectIds": [],
+        "warningObjectIds": ["owned-counter-unverified", "proposal-shelf-unverified"],
+        "newPurchaseCents": 0
+      },
+      "scene": {
+        "room": {
+          "width": 3.6576,
+          "depth": 3.048,
+          "height": 2.7432,
+          "entrance": {
+            "wall": "south",
+            "offset": 0,
+            "width": 0.9144
+          }
+        },
+        "purpose": "Initial camera scan draft before tape-measure verification",
+        "style": "Botanical apothecary",
+        "budgetCents": 40000,
+        "minWalkwayWidth": 0.9144,
+        "noDrilling": true,
+        "warnings": [
+          "Fixture dimensions estimated from uncalibrated video; verify physical specs before ordering."
+        ],
+        "objects": [
+          {
+            "id": "owned-counter-unverified",
+            "kind": "counter",
+            "label": "Observed Wood Counter (Approx Size)",
+            "source": "owned",
+            "position": [0.95, 0, -1.18],
+            "size": [1.3, 0.95, 0.52],
+            "rotationY": 0,
+            "dimensionsVerified": false
+          },
+          {
+            "id": "proposal-shelf-unverified",
+            "kind": "shelf",
+            "label": "Proposed Display Shelving (Spec Unverified)",
+            "source": "proposal",
+            "position": [-1.56, 0, -0.2],
+            "size": [1.4, 2.0, 0.4],
+            "rotationY": 1.5707963267948966,
+            "dimensionsVerified": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "eval-06-reused-owned-fixture",
+      "category": "reused-owned-fixture",
+      "title": "Reused owned counter and shelf contribute $0 toward $150 new-purchase budget",
+      "expected": {
+        "valid": true,
+        "errorCodes": [],
+        "warningCodes": [],
+        "affectedErrorObjectIds": [],
+        "newPurchaseCents": 12500
+      },
+      "scene": {
+        "room": {
+          "width": 3.6576,
+          "depth": 3.048,
+          "height": 2.7432,
+          "entrance": {
+            "wall": "south",
+            "offset": 0,
+            "width": 0.9144
+          }
+        },
+        "purpose": "Skincare studio reusing existing high-value millwork",
+        "style": "Warm oak and greenery",
+        "budgetCents": 15000,
+        "minWalkwayWidth": 0.9144,
+        "noDrilling": true,
+        "warnings": [],
+        "objects": [
+          {
+            "id": "reused-owned-counter",
+            "kind": "counter",
+            "label": "Reused Owned Custom Oak Counter",
+            "source": "owned",
+            "position": [0.95, 0, -1.18],
+            "size": [1.3, 0.95, 0.52],
+            "rotationY": 0,
+            "dimensionsVerified": true,
+            "product": {
+              "title": "Existing Merchant Counter Reference (Owned — $0 New Spend)",
+              "seller": "Prior Storefront Build",
+              "sellerDomain": "owned-reference.example.com",
+              "productId": "gid://shopify/Product/9001",
+              "variantId": "gid://shopify/ProductVariant/9001",
+              "priceCents": 65000,
+              "currency": "USD",
+              "productUrl": "https://owned-reference.example.com/products/custom-oak-counter",
+              "available": true
+            }
+          },
+          {
+            "id": "reused-owned-shelf",
+            "kind": "shelf",
+            "label": "Reused Owned Apothecary Shelf",
+            "source": "owned",
+            "position": [-1.56, 0, -0.2],
+            "size": [1.4, 2.0, 0.4],
+            "rotationY": 1.5707963267948966,
+            "dimensionsVerified": true
+          },
+          {
+            "id": "shopify-accent-plant",
+            "kind": "plant",
+            "label": "Ceramic Floor Planter & Olive Tree",
+            "source": "shopify",
+            "position": [1.38, 0, 0.95],
+            "size": [0.58, 1.35, 0.58],
+            "rotationY": 0,
+            "dimensionsVerified": true,
+            "product": {
+              "title": "Ceramic Floor Planter (Synthetic Test Fixture)",
+              "seller": "Botanical Test Goods",
+              "sellerDomain": "botanical-test.example.com",
+              "productId": "gid://shopify/Product/1007",
+              "variantId": "gid://shopify/ProductVariant/2007",
+              "priceCents": 12500,
+              "currency": "USD",
+              "productUrl": "https://botanical-test.example.com/products/ceramic-floor-planter",
+              "available": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "eval-07-no-drilling-violation",
+      "category": "no-drilling-violation",
+      "title": "Wall-mounted signage/art elevated at Y=1.35m violates noDrilling pop-up lease",
+      "expected": {
+        "valid": false,
+        "errorCodes": ["NO_DRILLING"],
+        "warningCodes": [],
+        "affectedErrorObjectIds": ["shopify-wall-mounted-art"],
+        "newPurchaseCents": 14000
+      },
+      "scene": {
+        "room": {
+          "width": 3.6576,
+          "depth": 3.048,
+          "height": 2.7432,
+          "entrance": {
+            "wall": "south",
+            "offset": 0,
+            "width": 0.9144
+          }
+        },
+        "purpose": "Short-term landlord-restricted pop-up shop",
+        "style": "Editorial gallery skincare",
+        "budgetCents": 40000,
+        "minWalkwayWidth": 0.9144,
+        "noDrilling": true,
+        "warnings": [],
+        "objects": [
+          {
+            "id": "owned-counter-east",
+            "kind": "counter",
+            "label": "Owned Consultation Bar",
+            "source": "owned",
+            "position": [1.32, 0, -0.4],
+            "size": [1.2, 0.95, 0.5],
+            "rotationY": -1.5707963267948966,
+            "dimensionsVerified": true
+          },
+          {
+            "id": "shopify-wall-mounted-art",
+            "kind": "art",
+            "label": "Wall-Mounted Framed Botanical Sign",
+            "source": "shopify",
+            "position": [-0.2, 1.35, -1.46],
+            "size": [0.95, 0.7, 0.06],
+            "rotationY": 0,
+            "dimensionsVerified": true,
+            "product": {
+              "title": "Wall-Mounted Framed Botanical Sign (Synthetic Test Fixture)",
+              "seller": "Gallery Test Prints",
+              "sellerDomain": "gallery-test.example.com",
+              "productId": "gid://shopify/Product/1008",
+              "variantId": "gid://shopify/ProductVariant/2008",
+              "priceCents": 14000,
+              "currency": "USD",
+              "productUrl": "https://gallery-test.example.com/products/wall-mounted-botanical-sign",
+              "available": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "eval-08-alternate-entrance",
+      "category": "alternate-entrance",
+      "title": "Offset east-wall entrance allows south-wall hero table while keeping east vestibule clear",
+      "expected": {
+        "valid": true,
+        "errorCodes": [],
+        "warningCodes": [],
+        "affectedErrorObjectIds": [],
+        "newPurchaseCents": 24000
+      },
+      "scene": {
+        "room": {
+          "width": 3.6576,
+          "depth": 3.048,
+          "height": 2.7432,
+          "entrance": {
+            "wall": "east",
+            "offset": -0.35,
+            "width": 0.9144
+          }
+        },
+        "purpose": "Corner-unit skincare boutique with east corridor entry",
+        "style": "Modern travertine studio",
+        "budgetCents": 40000,
+        "minWalkwayWidth": 0.9144,
+        "noDrilling": true,
+        "warnings": [],
+        "objects": [
+          {
+            "id": "owned-shelf-west",
+            "kind": "shelf",
+            "label": "Owned West Wall Display Shelf",
+            "source": "owned",
+            "position": [-1.56, 0, -0.2],
+            "size": [1.4, 2.0, 0.4],
+            "rotationY": 1.5707963267948966,
+            "dimensionsVerified": true
+          },
+          {
+            "id": "owned-counter-north",
+            "kind": "counter",
+            "label": "Owned North Wall Checkout Counter",
+            "source": "owned",
+            "position": [-0.2, 0, -1.2],
+            "size": [1.3, 0.95, 0.5],
+            "rotationY": 0,
+            "dimensionsVerified": true
+          },
+          {
+            "id": "shopify-south-feature-table",
+            "kind": "table",
+            "label": "South Wall Skincare Discovery Table",
+            "source": "shopify",
+            "position": [0, 0, 1.15],
+            "size": [1.3, 0.85, 0.56],
+            "rotationY": 0,
+            "dimensionsVerified": true,
+            "product": {
+              "title": "Skincare Discovery Table (Synthetic Test Fixture)",
+              "seller": "Fixture Test Co",
+              "sellerDomain": "fixture-test.example.com",
+              "productId": "gid://shopify/Product/1009",
+              "variantId": "gid://shopify/ProductVariant/2009",
+              "priceCents": 24000,
+              "currency": "USD",
+              "productUrl": "https://fixture-test.example.com/products/skincare-discovery-table",
+              "available": true
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
