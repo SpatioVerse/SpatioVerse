@@ -785,9 +785,11 @@ export default function HomePage() {
         owned.push(obj);
       } else {
         proposed.push(obj);
-        if (obj.product && obj.source === 'shopify' && cartObjectIds.includes(obj.id)) {
-          spent += Math.round(obj.product.priceCents);
+        if (cartObjectIds.includes(obj.id)) {
           shopify.push(obj);
+          if (obj.product) {
+            spent += Math.round(obj.product.priceCents);
+          }
         }
       }
     }

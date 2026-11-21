@@ -358,7 +358,7 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
         : get().activePreset;
       const validator = get().validator;
       const initialCartIds = validScene.objects
-        .filter((o) => o.source === 'shopify' && Boolean(o.product) && Boolean(o.locked))
+        .filter((o) => o.source !== 'owned' && Boolean(o.locked))
         .map((o) => o.id);
 
       set({
@@ -593,6 +593,7 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
   },
 
   toggleLock: (id) => {
+    let needsLiveShopifyMatch: SceneObject | null = null;
     set((state) => {
       const target = state.scene.objects.find((obj) => obj.id === id);
       const nextLocked = target ? !target.locked : false;
@@ -603,10 +604,13 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
         ),
       };
       let nextCartIds = state.cartObjectIds;
-      if (target && target.source === 'shopify' && target.product) {
+      if (target && target.source !== 'owned') {
         if (nextLocked) {
           if (!nextCartIds.includes(id)) {
             nextCartIds = [...nextCartIds, id];
+          }
+          if (!target.product) {
+            needsLiveShopifyMatch = target;
           }
         } else {
           nextCartIds = nextCartIds.filter((cid) => cid !== id);
@@ -619,6 +623,34 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
         isDragging: state.selectedId === id ? false : state.isDragging,
       };
     });
+
+    // If a proposed item was locked without a linked Shopify SKU yet, auto-source
+    // a real purchasable Shopify product so it can be checked out immediately.
+    if (needsLiveShopifyMatch && typeof window !== 'undefined') {
+      const targetObj = needsLiveShopifyMatch as SceneObject;
+      const cleanQuery =
+        targetObj.label
+          .replace(/\b(proposed|owned|hero|architectural|consultation|boutique)\b/gi, '')
+          .trim() || targetObj.kind;
+      const params = new URLSearchParams({ q: cleanQuery });
+      void fetch(`/api/products?${params.toString()}`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data: { products?: ProductRef[] } | null) => {
+          const best = Array.isArray(data?.products)
+            ? data.products.find((p) => p.available !== false) ?? data.products[0]
+            : null;
+          if (!best) return;
+          const current = get().scene.objects.find((o) => o.id === targetObj.id);
+          if (!current || !current.locked || current.product) return;
+          get().updateObject(targetObj.id, {
+            source: 'shopify',
+            product: best,
+          });
+        })
+        .catch(() => {
+          // Non-fatal: user can still pick any variant from Shop tab
+        });
+    }
   },
 
   updateObject: (id, patch) => {

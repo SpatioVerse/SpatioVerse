@@ -73,10 +73,7 @@ export function SceneToolbar({
   const voiceOrderItems = useSceneStore((state) => state.voiceOrderItems);
   const sceneCartIds = new Set(cartObjectIds);
   const sceneCartObjects = scene.objects.filter(
-    (obj) =>
-      obj.source === 'shopify' &&
-      Boolean(obj.product) &&
-      sceneCartIds.has(obj.id)
+    (obj) => obj.source !== 'owned' && sceneCartIds.has(obj.id)
   );
   const seenVariantIds = new Set(
     sceneCartObjects

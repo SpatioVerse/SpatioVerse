@@ -308,11 +308,13 @@ export function ProductPanel({
         owned += 1;
         continue;
       }
-      if (obj.source === "shopify" && obj.product && cartIdSet.has(obj.id)) {
+      if (cartIdSet.has(obj.id)) {
         cartItems.push(obj);
-        seenVariantIds.add(obj.product.variantId);
-        totalCents += obj.product.priceCents;
-        if (obj.product.currency) currency = obj.product.currency;
+        if (obj.product) {
+          seenVariantIds.add(obj.product.variantId);
+          totalCents += obj.product.priceCents;
+          if (obj.product.currency) currency = obj.product.currency;
+        }
       }
     }
 
@@ -823,7 +825,7 @@ export function ProductPanel({
                 <span className="shrink-0 font-medium text-amber-200">
                   {obj.product
                     ? formatMoney(obj.product.priceCents, obj.product.currency)
-                    : ""}
+                    : "Sourcing…"}
                 </span>
                 <button
                   type="button"
