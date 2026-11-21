@@ -81,6 +81,8 @@ export interface ProductPanelProps {
   onRetry?: () => void;
   /** Optional externally supplied /api/cart result. */
   cartResult?: CartHandoffResult | null;
+  /** Render full panel ('all'), browse-only ('shop'), or cart-only ('cart'). */
+  view?: "all" | "shop" | "cart";
 }
 
 const KIND_TO_DEFAULT_QUERY: Record<SceneObjectKind, string> = {
@@ -128,6 +130,7 @@ export function ProductPanel({
   onReviewCart,
   onRetry,
   cartResult: controlledCartResult,
+  view = "all",
 }: ProductPanelProps) {
   const isControlledProducts = controlledProducts !== undefined;
 
@@ -456,11 +459,13 @@ export function ProductPanel({
 
   return (
     <aside
-      aria-label="Shopify Product Panel"
+      aria-label={view === "cart" ? "Shopify Shopping Cart" : "Shopify Product Panel"}
       className="flex h-full w-full flex-col rounded-2xl border border-zinc-800 bg-zinc-950 text-zinc-100 shadow-lg"
     >
-      {/* Header + Search */}
-      <div className="space-y-3 border-b border-zinc-800 p-4">
+      {view !== "cart" && (
+        <>
+          {/* Header + Search */}
+          <div className="space-y-3 border-b border-zinc-800 p-4">
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-sm font-semibold text-zinc-100">Real Shopify Products</h2>
           <span className="rounded-full bg-zinc-800 px-2.5 py-0.5 text-[11px] font-medium text-zinc-300">
@@ -716,9 +721,26 @@ export function ProductPanel({
             );
           })}
       </div>
+        </>
+      )}
 
-      {/* Footer: Owned ($0) vs New Purchases Total + Merchant Cart Handoff */}
-      <div className="border-t border-zinc-800 bg-zinc-900/70 p-4">
+      {/* Footer / Dedicated Cart View: Owned ($0) vs Carted Shopify Purchases + Merchant Cart Handoff */}
+      {view !== "shop" && (
+      <div
+        className={`bg-zinc-900/70 p-4 ${
+          view === "cart"
+            ? "flex min-h-0 flex-1 flex-col overflow-y-auto"
+            : "border-t border-zinc-800"
+        }`}
+      >
+        {view === "cart" && (
+          <div className="mb-3 flex items-center justify-between border-b border-zinc-800 pb-2.5">
+            <h2 className="text-sm font-semibold text-zinc-100">Your Shopping Cart</h2>
+            <span className="rounded-full bg-emerald-500/20 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-200">
+              {totalCartCount} {totalCartCount === 1 ? "item" : "items"}
+            </span>
+          </div>
+        )}
         <div className="space-y-1 text-xs">
           <div className="flex items-center justify-between text-zinc-400">
             <span>Owned items ({ownedCount})</span>
@@ -864,6 +886,7 @@ export function ProductPanel({
           </div>
         )}
       </div>
+      )}
     </aside>
   );
 }

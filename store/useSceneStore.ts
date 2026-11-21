@@ -40,7 +40,7 @@ export interface DraftedDesignPrompt {
 
 export type CameraMode = 'orbit' | 'walkthrough';
 export type CameraPreset = 'perspective' | 'top' | 'entrance';
-export type RightPanelTab = 'inspect' | 'shop';
+export type RightPanelTab = 'inspect' | 'shop' | 'cart';
 
 export type MediaSourceSummary = {
   kind: 'video' | 'image' | 'camera' | 'youtube';
@@ -1177,8 +1177,12 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
 
   setVoiceOrderResult: (result) => {
     set((state) => ({
-      rightPanelTab: 'shop',
-      shopDrawerRequestedEpoch: state.shopDrawerRequestedEpoch + 1,
+      ...(result
+        ? {
+            rightPanelTab: 'cart' as RightPanelTab,
+            shopDrawerRequestedEpoch: state.shopDrawerRequestedEpoch + 1,
+          }
+        : {}),
       voiceOrderResult: result,
     }));
   },

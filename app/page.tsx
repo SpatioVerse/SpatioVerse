@@ -325,6 +325,7 @@ export default function HomePage() {
   const wizardOpen = useSceneStore((state) => state.wizardOpen);
   const rightPanelTab = useSceneStore((state) => state.rightPanelTab);
   const cartObjectIds = useSceneStore((state) => state.cartObjectIds);
+  const voiceOrderItems = useSceneStore((state) => state.voiceOrderItems);
   const shopDrawerRequestedEpoch = useSceneStore(
     (state) => state.shopDrawerRequestedEpoch
   );
@@ -500,6 +501,12 @@ export default function HomePage() {
 
   const handleSwitchToShopTab = useCallback(() => {
     setRightPanelTab('shop');
+    setDrawerPinnedOpen(true);
+    setDismissedInspectorId(null);
+  }, [setRightPanelTab]);
+
+  const handleSwitchToCartTab = useCallback(() => {
+    setRightPanelTab('cart');
     setDrawerPinnedOpen(true);
     setDismissedInspectorId(null);
   }, [setRightPanelTab]);
@@ -798,6 +805,18 @@ export default function HomePage() {
       }
     }
 
+    const seenCartVariants = new Set(
+      shopify
+        .map((o) => o.product?.variantId)
+        .filter((v): v is string => Boolean(v))
+    );
+    for (const p of voiceOrderItems) {
+      if (!seenCartVariants.has(p.variantId)) {
+        seenCartVariants.add(p.variantId);
+        spent += Math.round(p.priceCents);
+      }
+    }
+
     return {
       ownedObjects: owned,
       proposedObjects: proposed,
@@ -807,7 +826,23 @@ export default function HomePage() {
       warningIds: warnSet,
       spentCents: spent,
     };
-  }, [scene.objects, issues, cartObjectIds]);
+  }, [scene.objects, issues, cartObjectIds, voiceOrderItems]);
+
+  const totalCartBadgeCount = useMemo(() => {
+    const seen = new Set(
+      shopifyObjects
+        .map((o) => o.product?.variantId)
+        .filter((v): v is string => Boolean(v))
+    );
+    let count = shopifyObjects.length;
+    for (const p of voiceOrderItems) {
+      if (!seen.has(p.variantId)) {
+        seen.add(p.variantId);
+        count += 1;
+      }
+    }
+    return count;
+  }, [shopifyObjects, voiceOrderItems]);
 
   const selectedIssues = useMemo(() => {
     if (!selectedObject) return [];
@@ -986,22 +1021,22 @@ export default function HomePage() {
         </aside>
       )}
 
-      {/* Collapsible Floating Right Studio Drawer (Inspect + Live Shopify Shop & Cart) */}
+      {/* Collapsible Floating Right Studio Drawer (Inspect + Live Shopify Shop + Cart) */}
       {rightDrawerOpen && (
         <section
           aria-label="Studio Inspector and Shopify Commerce Drawer"
           className={`pointer-events-auto fixed bottom-16 right-3 top-[68px] z-20 flex flex-col overflow-hidden rounded-2xl border border-white/12 bg-zinc-950/84 shadow-[0_18px_50px_rgba(0,0,0,0.55)] backdrop-blur-xl transition-[width] duration-200 ${
-            rightPanelTab === 'shop'
+            rightPanelTab === 'shop' || rightPanelTab === 'cart'
               ? 'w-[380px] max-w-[calc(100vw-24px)]'
               : 'w-[292px] max-w-[calc(100vw-24px)]'
           }`}
         >
-          {/* 2-Tab Segmented Drawer Header */}
+          {/* 3-Tab Segmented Drawer Header: Inspect | Shop | Cart */}
           <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/10 px-3 py-2.5">
             <div
               role="tablist"
               aria-label="Studio Right Panel Tabs"
-              className="grid flex-1 grid-cols-2 gap-1 rounded-xl bg-white/6 p-0.5"
+              className="grid flex-1 grid-cols-3 gap-1 rounded-xl bg-white/6 p-0.5"
             >
               <button
                 type="button"
@@ -1009,13 +1044,13 @@ export default function HomePage() {
                 data-testid="right-tab-inspect"
                 aria-selected={rightPanelTab === 'inspect'}
                 onClick={handleSwitchToInspectTab}
-                className={`flex cursor-pointer items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-[11px] font-semibold transition-all ${
+                className={`flex cursor-pointer items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-semibold transition-all ${
                   rightPanelTab === 'inspect'
                     ? 'bg-white text-zinc-950 shadow-sm'
                     : 'text-zinc-300 hover:bg-white/8 hover:text-white'
                 }`}
               >
-                <SlidersHorizontal className="h-3.5 w-3.5" />
+                <SlidersHorizontal className="h-3 w-3" />
                 <span>Inspect</span>
               </button>
 
@@ -1025,23 +1060,38 @@ export default function HomePage() {
                 data-testid="right-tab-shop"
                 aria-selected={rightPanelTab === 'shop'}
                 onClick={handleSwitchToShopTab}
-                className={`flex cursor-pointer items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-[11px] font-semibold transition-all ${
+                className={`flex cursor-pointer items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-semibold transition-all ${
                   rightPanelTab === 'shop'
-                    ? 'bg-gradient-to-r from-emerald-300 to-amber-200 text-zinc-950 shadow-sm'
+                    ? 'bg-amber-300 text-zinc-950 shadow-sm'
                     : 'text-zinc-300 hover:bg-white/8 hover:text-white'
                 }`}
               >
-                <ShoppingBag className="h-3.5 w-3.5" />
-                <span>Shop &amp; Cart</span>
-                {shopifyObjects.length > 0 && (
+                <ShoppingBag className="h-3 w-3" />
+                <span>Shop</span>
+              </button>
+
+              <button
+                type="button"
+                role="tab"
+                data-testid="right-tab-cart"
+                aria-selected={rightPanelTab === 'cart'}
+                onClick={handleSwitchToCartTab}
+                className={`flex cursor-pointer items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-semibold transition-all ${
+                  rightPanelTab === 'cart'
+                    ? 'bg-emerald-400 text-zinc-950 shadow-sm'
+                    : 'text-zinc-300 hover:bg-white/8 hover:text-white'
+                }`}
+              >
+                <span>Cart</span>
+                {totalCartBadgeCount > 0 && (
                   <span
                     className={`rounded-full px-1.5 py-0.5 text-[9px] font-bold leading-none ${
-                      rightPanelTab === 'shop'
+                      rightPanelTab === 'cart'
                         ? 'bg-zinc-950/20 text-zinc-950'
                         : 'bg-emerald-500/25 text-emerald-200'
                     }`}
                   >
-                    {shopifyObjects.length}
+                    {totalCartBadgeCount}
                   </span>
                 )}
               </button>
@@ -1370,6 +1420,7 @@ export default function HomePage() {
               <ProductPanel
                 selectedObject={selectedObject}
                 scene={scene}
+                view={rightPanelTab === 'cart' ? 'cart' : 'shop'}
                 onReplaceObjectProduct={handleReplaceObjectProduct}
                 onAddObjectProduct={handleAddObjectProduct}
               />
@@ -1609,7 +1660,11 @@ export default function HomePage() {
       {/* Live Multilingual Voice-Editing Control */}
       <VoiceRoomControl
         rightOffsetPx={
-          rightDrawerOpen ? (rightPanelTab === 'shop' ? 404 : 316) : 0
+          rightDrawerOpen
+            ? rightPanelTab === 'shop' || rightPanelTab === 'cart'
+              ? 404
+              : 316
+            : 0
         }
       />
 

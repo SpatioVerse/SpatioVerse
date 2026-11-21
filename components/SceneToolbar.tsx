@@ -70,14 +70,26 @@ export function SceneToolbar({
     (issue) => issue.severity === 'warning'
   ).length;
   const cartObjectIds = useSceneStore((state) => state.cartObjectIds);
-  const shopifyCount = scene.objects.filter(
+  const voiceOrderItems = useSceneStore((state) => state.voiceOrderItems);
+  const sceneCartIds = new Set(cartObjectIds);
+  const sceneCartObjects = scene.objects.filter(
     (obj) =>
       obj.source === 'shopify' &&
       Boolean(obj.product) &&
-      cartObjectIds.includes(obj.id)
+      sceneCartIds.has(obj.id)
+  );
+  const seenVariantIds = new Set(
+    sceneCartObjects
+      .map((o) => o.product?.variantId)
+      .filter((v): v is string => Boolean(v))
+  );
+  const extraVoiceCount = voiceOrderItems.filter(
+    (p) => !seenVariantIds.has(p.variantId)
   ).length;
+  const shopifyCount = sceneCartObjects.length + extraVoiceCount;
   const isWalkthrough = cameraMode === 'walkthrough';
-  const shopActive = inspectorOpen && rightPanelTab === 'shop';
+  const shopActive =
+    inspectorOpen && (rightPanelTab === 'shop' || rightPanelTab === 'cart');
 
   const handleOpenShopClick = () => {
     if (onOpenShop) {
