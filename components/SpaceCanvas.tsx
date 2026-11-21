@@ -1,15 +1,20 @@
 'use client';
 
 import { Suspense, useEffect, useMemo, useRef } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { ContactShadows, OrbitControls, useGLTF } from '@react-three/drei';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import * as THREE from 'three';
 import { BoutiqueEnvironment } from '@/components/BoutiqueEnvironment';
 import { FirstPersonRig, type WalkerPose } from '@/components/FirstPersonRig';
 import { SceneObject } from '@/components/SceneObject';
+import {
+  registerFrameCapturer,
+  updateCameraBasis,
+} from '@/lib/cameraBridge';
 import { GLB_MODEL_PATHS } from '@/lib/modelCatalog';
-import type { SceneValidator, ShopScene } from '@/lib/schema';
+import type { SceneObject as SceneObjectType, SceneValidator, ShopScene } from '@/lib/schema';
+import type { VoicePreviewState } from '@/lib/voiceActions';
 import {
   useSceneStore,
   type CameraPreset,
@@ -209,6 +214,237 @@ function OrbitCameraController({
   );
 }
 
+/**
+ * Publishes live camera orientation (forwardXZ / rightXZ) and an on-demand
+ * JPEG canvas snapshot function to `lib/cameraBridge` with zero React re-renders.
+ */
+function CameraBridgeSync() {
+  const { gl, scene, camera } = useThree();
+  const forwardRef = useRef(new THREE.Vector3());
+  const rightRef = useRef(new THREE.Vector3());
+  const upRef = useRef(new THREE.Vector3(0, 1, 0));
+
+  useEffect(() => {
+    registerFrameCapturer(() => {
+      try {
+        gl.render(scene, camera);
+        const src = gl.domElement;
+        const maxW = 512;
+        const scale = src.width > maxW ? maxW / src.width : 1;
+        const outW = Math.max(1, Math.round(src.width * scale));
+        const outH = Math.max(1, Math.round(src.height * scale));
+        const offscreen = document.createElement('canvas');
+        offscreen.width = outW;
+        offscreen.height = outH;
+        const ctx = offscreen.getContext('2d');
+        if (!ctx) return null;
+        ctx.drawImage(src, 0, 0, outW, outH);
+        const dataUrl = offscreen.toDataURL('image/jpeg', 0.65);
+        return dataUrl.split(',')[1] ?? null;
+      } catch {
+        return null;
+      }
+    });
+
+    return () => {
+      registerFrameCapturer(null);
+    };
+  }, [gl, scene, camera]);
+
+  useFrame(() => {
+    camera.getWorldDirection(forwardRef.current);
+    const fx = forwardRef.current.x;
+    const fz = forwardRef.current.z;
+    const fLen = Math.hypot(fx, fz);
+    const normFx = fLen > 1e-4 ? fx / fLen : 0;
+    const normFz = fLen > 1e-4 ? fz / fLen : -1;
+
+    rightRef.current
+      .set(normFx, 0, normFz)
+      .cross(upRef.current)
+      .normalize();
+
+    updateCameraBasis(
+      [camera.position.x, camera.position.y, camera.position.z],
+      [normFx, normFz],
+      [rightRef.current.x, rightRef.current.z]
+    );
+  });
+
+  return null;
+}
+
+function shortestAngleDelta(from: number, to: number): number {
+  let diff = (to - from) % (Math.PI * 2);
+  if (diff > Math.PI) diff -= Math.PI * 2;
+  if (diff < -Math.PI) diff += Math.PI * 2;
+  return diff;
+}
+
+interface VoicePreviewGhostProps {
+  object: SceneObjectType;
+  preview: VoicePreviewState;
+}
+
+/**
+ * Smoothly animated translucent 3D preview ghost that slides/rotates to the
+ * proposed pose while the original fixture stays visible until confirmed.
+ */
+function VoicePreviewGhost({ object, preview }: VoicePreviewGhostProps) {
+  const ghostGroupRef = useRef<THREE.Group | null>(null);
+  const currentPosRef = useRef(
+    new THREE.Vector3(
+      preview.originalPosition[0],
+      preview.originalPosition[1],
+      preview.originalPosition[2]
+    )
+  );
+  const currentYawRef = useRef(preview.originalRotationY);
+  const lastObjectIdRef = useRef(preview.objectId);
+
+  const hasError = preview.issues.some((i) => i.severity === 'error');
+  const accentColor = hasError
+    ? '#ef4444'
+    : preview.frozen
+      ? '#f59e0b'
+      : '#38bdf8';
+
+  const [w, h, d] = object.size;
+
+  const boxEdges = useMemo(() => {
+    const geom = new THREE.BoxGeometry(w, h, d);
+    const edges = new THREE.EdgesGeometry(geom);
+    geom.dispose();
+    return edges;
+  }, [w, h, d]);
+
+  useEffect(() => {
+    return () => {
+      boxEdges.dispose();
+    };
+  }, [boxEdges]);
+
+  useFrame((_, rawDelta) => {
+    const group = ghostGroupRef.current;
+    if (!group) return;
+
+    if (lastObjectIdRef.current !== preview.objectId) {
+      lastObjectIdRef.current = preview.objectId;
+      currentPosRef.current.set(
+        preview.originalPosition[0],
+        preview.originalPosition[1],
+        preview.originalPosition[2]
+      );
+      currentYawRef.current = preview.originalRotationY;
+    }
+
+    const dt = Math.min(rawDelta, 0.05);
+    const speed = preview.frozen ? 22 : 9.5;
+    const alpha = 1 - Math.exp(-speed * dt);
+
+    currentPosRef.current.x +=
+      (preview.previewPosition[0] - currentPosRef.current.x) * alpha;
+    currentPosRef.current.y +=
+      (preview.previewPosition[1] - currentPosRef.current.y) * alpha;
+    currentPosRef.current.z +=
+      (preview.previewPosition[2] - currentPosRef.current.z) * alpha;
+
+    const dYaw = shortestAngleDelta(
+      currentYawRef.current,
+      preview.previewRotationY
+    );
+    currentYawRef.current += dYaw * alpha;
+
+    group.position.copy(currentPosRef.current);
+    group.rotation.set(0, currentYawRef.current, 0);
+  });
+
+  // Floor connector ribbon between original center and preview target center
+  const dx = preview.previewPosition[0] - preview.originalPosition[0];
+  const dz = preview.previewPosition[2] - preview.originalPosition[2];
+  const moveDist = Math.hypot(dx, dz);
+  const midX = (preview.originalPosition[0] + preview.previewPosition[0]) / 2;
+  const midZ = (preview.originalPosition[2] + preview.previewPosition[2]) / 2;
+  const pathAngle = Math.atan2(dx, dz);
+
+  return (
+    <group>
+      {/* Translucent animated holographic preview volume */}
+      <group
+        ref={ghostGroupRef}
+        position={preview.originalPosition}
+        rotation={[0, preview.originalRotationY, 0]}
+      >
+        <mesh position={[0, h / 2, 0]}>
+          <boxGeometry args={[w, h, d]} />
+          <meshStandardMaterial
+            color={accentColor}
+            emissive={accentColor}
+            emissiveIntensity={hasError ? 0.45 : 0.28}
+            transparent
+            opacity={hasError ? 0.36 : 0.28}
+            roughness={0.25}
+            depthWrite={false}
+          />
+        </mesh>
+
+        <lineSegments position={[0, h / 2, 0]} geometry={boxEdges}>
+          <lineBasicMaterial color={accentColor} transparent opacity={0.95} />
+        </lineSegments>
+
+        {/* Crisp floor footprint glow */}
+        <mesh position={[0, 0.012, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+          <planeGeometry args={[w + 0.08, d + 0.08]} />
+          <meshBasicMaterial
+            color={accentColor}
+            transparent
+            opacity={hasError ? 0.34 : 0.22}
+            depthWrite={false}
+          />
+        </mesh>
+      </group>
+
+      {/* Motion path ribbon from original position to preview target */}
+      {moveDist > 0.05 && (
+        <mesh
+          position={[midX, 0.015, midZ]}
+          rotation={[-Math.PI / 2, 0, pathAngle]}
+        >
+          <planeGeometry args={[0.045, moveDist]} />
+          <meshBasicMaterial
+            color={accentColor}
+            transparent
+            opacity={0.75}
+            depthWrite={false}
+          />
+        </mesh>
+      )}
+
+      {/* Optional validated alternative footprint suggestion on the floor */}
+      {preview.suggestedAlternative && (
+        <group
+          position={[
+            preview.suggestedAlternative.position[0],
+            0.014,
+            preview.suggestedAlternative.position[2],
+          ]}
+          rotation={[0, preview.suggestedAlternative.rotationY, 0]}
+        >
+          <mesh rotation={[-Math.PI / 2, 0, 0]}>
+            <planeGeometry args={[w + 0.06, d + 0.06]} />
+            <meshBasicMaterial
+              color="#10b981"
+              transparent
+              opacity={0.28}
+              depthWrite={false}
+            />
+          </mesh>
+        </group>
+      )}
+    </group>
+  );
+}
+
 export function SpaceCanvas({ validator, onWalkerPose }: SpaceCanvasProps) {
   const scene = useSceneStore((state) => state.scene);
   const selectedId = useSceneStore((state) => state.selectedId);
@@ -218,6 +454,8 @@ export function SpaceCanvas({ validator, onWalkerPose }: SpaceCanvasProps) {
   const cameraPresetTick = useSceneStore((state) => state.cameraPresetTick);
   const showGrid = useSceneStore((state) => state.showGrid);
   const issues = useSceneStore((state) => state.issues);
+  const voicePreview = useSceneStore((state) => state.voicePreview);
+  const voiceHighlightIds = useSceneStore((state) => state.voiceHighlightIds);
   const selectObject = useSceneStore((state) => state.selectObject);
   const moveObject = useSceneStore((state) => state.moveObject);
   const setDragging = useSceneStore((state) => state.setDragging);
@@ -245,7 +483,11 @@ export function SpaceCanvas({ validator, onWalkerPose }: SpaceCanvasProps) {
     const warnings = new Set<string>();
     let blocked = false;
 
-    for (const issue of issues) {
+    const allIssues = voicePreview
+      ? [...issues, ...voicePreview.issues]
+      : issues;
+
+    for (const issue of allIssues) {
       if (issue.code === 'BLOCKED_PATH') {
         blocked = true;
       }
@@ -259,7 +501,53 @@ export function SpaceCanvas({ validator, onWalkerPose }: SpaceCanvasProps) {
     }
 
     return { errorIds: errors, warningIds: warnings, hasBlockedPath: blocked };
-  }, [issues]);
+  }, [issues, voicePreview]);
+
+  const voiceHighlightSet = useMemo(
+    () => new Set(voiceHighlightIds),
+    [voiceHighlightIds]
+  );
+
+  const previewEntries = useMemo(() => {
+    if (!voicePreview) return [];
+    if (voicePreview.objectPoses) {
+      const entries: Array<{
+        object: SceneObjectType;
+        preview: VoicePreviewState;
+      }> = [];
+      for (const [objId, delta] of Object.entries(voicePreview.objectPoses)) {
+        const obj = scene.objects.find((o) => o.id === objId);
+        if (!obj) continue;
+        entries.push({
+          object: obj,
+          preview: {
+            ...voicePreview,
+            objectId: objId,
+            originalPosition: delta.originalPosition,
+            originalRotationY: delta.originalRotationY,
+            previewPosition: delta.previewPosition,
+            previewRotationY: delta.previewRotationY,
+            suggestedAlternative:
+              objId === voicePreview.objectId
+                ? voicePreview.suggestedAlternative
+                : null,
+          },
+        });
+      }
+      return entries;
+    }
+
+    const single = scene.objects.find((o) => o.id === voicePreview.objectId);
+    return single ? [{ object: single, preview: voicePreview }] : [];
+  }, [scene.objects, voicePreview]);
+
+  const previewOriginSet = useMemo(() => {
+    const ids = new Set<string>();
+    for (const entry of previewEntries) {
+      ids.add(entry.object.id);
+    }
+    return ids;
+  }, [previewEntries]);
 
   const isWalkthrough = cameraMode === 'walkthrough';
   const contactShadowScale = Math.max(scene.room.width, scene.room.depth) * 1.5;
@@ -305,6 +593,8 @@ export function SpaceCanvas({ validator, onWalkerPose }: SpaceCanvasProps) {
               key={obj.id}
               object={obj}
               isSelected={selectedId === obj.id && !isWalkthrough}
+              isVoiceHighlighted={voiceHighlightSet.has(obj.id) && !isWalkthrough}
+              isPreviewOrigin={previewOriginSet.has(obj.id) && !isWalkthrough}
               hasError={errorIds.has(obj.id)}
               hasWarning={warningIds.has(obj.id)}
               interactive={!isWalkthrough}
@@ -313,6 +603,16 @@ export function SpaceCanvas({ validator, onWalkerPose }: SpaceCanvasProps) {
               onDragStateChange={setDragging}
             />
           ))}
+
+          {previewEntries.map((entry) => (
+            <VoicePreviewGhost
+              key={`preview-${entry.object.id}`}
+              object={entry.object}
+              preview={entry.preview}
+            />
+          ))}
+
+          <CameraBridgeSync />
 
           <ContactShadows
             position={[0, 0.002, 0]}
