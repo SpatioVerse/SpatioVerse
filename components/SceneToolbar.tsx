@@ -96,7 +96,7 @@ export function SceneToolbar({
           </span>
           <div className="leading-none">
             <div className="text-[13px] font-semibold tracking-tight text-white">
-              SpaceStage
+              SpatioVerse
             </div>
             <div className="hidden text-[10px] font-medium text-zinc-400 2xl:block">
               3D Retail Studio
@@ -248,7 +248,7 @@ export function SceneToolbar({
           type="button"
           data-testid="toolbar-setup-wizard-btn"
           onClick={() => setWizardOpen(true)}
-          title="Open 4-step SpaceStage Setup Wizard"
+          title="Open 4-step SpatioVerse Setup Wizard"
           aria-pressed={wizardOpen}
           className={`flex cursor-pointer items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-[11px] font-semibold transition-all ${
             wizardOpen

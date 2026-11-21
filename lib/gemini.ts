@@ -399,7 +399,7 @@ function buildObservationPrompts(
     : 'Room floor is centered at [0, 0] in meters (use approximate centered coordinates X in [-2.4, +2.4], Z in [-2.1, +2.1]).';
 
   const systemPrompt = [
-    `You are SpaceStage Vision-to-3D Scene Observer powered by ${ANALYZE_MODEL_ID}.`,
+    `You are SpatioVerse Vision-to-3D Scene Observer powered by ${ANALYZE_MODEL_ID}.`,
     'Watch the entire space video/photo and DIRECTLY reconstruct the 3D floorplan coordinates (`position`, `rotationY`, `approxSizeMeters`) of every visible floor-standing furniture/fixture item so the 3D scene mirrors the exact layout seen in the media.',
     roomLine,
     'STRICT RULES:',
@@ -1316,7 +1316,7 @@ function buildPlannerSystemInstruction(params: {
   const halfD = (room.depth / 2).toFixed(3);
 
   return [
-    `You are a Professional Interior Designer and SpaceStage Spatial Planner powered by ${PLAN_MODEL_ID}.`,
+    `You are a Professional Interior Designer and SpatioVerse Spatial Planner powered by ${PLAN_MODEL_ID}.`,
     'Design a cohesive, realistically proportioned, visually balanced 3D room and retail floorplan in strict JSON—prioritizing natural furniture-to-room scale ratios, focal points, sightlines, material harmony, and comfortable circulation.',
     '',
     'COORDINATE & GEOMETRY RULES (MANDATORY):',
@@ -1980,7 +1980,7 @@ export async function replaceObjectInScene(
   });
 
   const systemInstruction = [
-    `You are a Professional Interior Designer and SpaceStage 3D Add & Replacement Engine powered by ${PLAN_MODEL_ID}.`,
+    `You are a Professional Interior Designer and SpatioVerse 3D Add & Replacement Engine powered by ${PLAN_MODEL_ID}.`,
     'Interpret the user’s typed or spoken command (or drafted design prompt / clicked product specification) to ADD a new 3D furniture piece, REPLACE an existing one, or REMOVE one—always maintaining natural room-proportional dimensions, cohesive materials, and clean circulation.',
     'RULES:',
     '1. ADD INTENT: If the user says "add", "place", "put", "insert", "bring in", or "new" (e.g., "add a round walnut table", "add a floor lamp in the corner", "put a cream sofa"), ALWAYS set `action: "add"`, set `targetObjectId: null`, leave all existing objects untouched, and pick an open, collision-free floor `position: [x, 0, z]` inside `room` bounds that does not overlap any item in `sceneObjects` and keeps clear of the room entrance.',
@@ -2499,7 +2499,7 @@ export async function matchProductImageToGlb(
   });
 
   const systemInstruction = [
-    'You are SpaceStage Visual 3D Asset Matcher.',
+    'You are SpatioVerse Visual 3D Asset Matcher.',
     'Look closely at the product PHOTO (primary ground truth) and title, and pick the single closest 3D GLB silhouette key from our 46-model catalog:',
     '- Round Tables: tableRoundWood (round wood end/side table with legs/shelf), tableRoundAccent (compact round accent/pedestal table), tableRound (low round coffee table)',
     '- Rectangular Tables/Desks/Carts: tableSide (square/compact side table), tableSideTall (tall narrow side table), tableSmallWood (small wood table), table (modern coffee table), tableCoffeeModern2 (contemporary coffee table 2), tableIndustrial (industrial metal+wood coffee table), tableWoodClassic (classic rectangular wood table), tableDining (large dining table), tableConsole (narrow hallway/display console), deskMetal (office/display desk), cartCoffee (rolling coffee/display cart), cartIndustrial (industrial storage cart)',

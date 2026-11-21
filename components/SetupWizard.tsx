@@ -721,7 +721,7 @@ export function SetupWizard({
 
   return (
     <section
-      aria-label="SpaceStage Setup Wizard"
+      aria-label="SpatioVerse Setup Wizard"
       className="mx-auto w-full max-w-2xl rounded-2xl border border-zinc-800 bg-zinc-950 p-6 text-zinc-100 shadow-2xl"
     >
       <header className="mb-6">

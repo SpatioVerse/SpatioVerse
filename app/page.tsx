@@ -1615,13 +1615,13 @@ export default function HomePage() {
       {/* Multimodal Media Intake Modal */}
       <MediaIntakeModal />
 
-      {/* 4-Step SpaceStage Setup Wizard Modal */}
+      {/* 4-Step SpatioVerse Setup Wizard Modal */}
       {wizardOpen && (
         <div
           data-testid="setup-wizard-modal"
           role="dialog"
           aria-modal="true"
-          aria-label="SpaceStage Setup Wizard"
+          aria-label="SpatioVerse Setup Wizard"
           onClick={() => setWizardOpen(false)}
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
         >

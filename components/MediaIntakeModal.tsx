@@ -1026,7 +1026,7 @@ function MediaIntakeDialogContent({
               : 'Validated',
           ]
             .filter(Boolean)
-            .join(' · ') || 'Analyzed & planned via SpaceStage Gemini backend',
+            .join(' · ') || 'Analyzed & planned via SpatioVerse Gemini backend',
         backendConnected: true,
         updatedAt,
       });

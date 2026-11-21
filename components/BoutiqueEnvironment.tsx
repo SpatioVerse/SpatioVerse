@@ -339,7 +339,7 @@ interface NorthFeaturePlaqueProps {
  * mounted on the upper north wall to anchor eye-level gallery sightlines.
  */
 function NorthFeaturePlaque({ span, height }: NorthFeaturePlaqueProps) {
-  const plaqueTexture = useMemo(() => getNorthWallPlaqueTexture('SPACESTAGE'), []);
+  const plaqueTexture = useMemo(() => getNorthWallPlaqueTexture('SPATIOVERSE'), []);
 
   const isWide = span >= 5.2;
   const plaqueX = isWide ? span * 0.24 : span * 0.22;
@@ -687,7 +687,7 @@ function LuxuryStorefrontWall({
   const { span, extendEnds, position, rotationY, entranceLocalU } = placement;
   const outerSpan = extendEnds ? span + WALL_THICKNESS * 2 : span;
 
-  const signTexture = useMemo(() => getTransomSignTexture('SPACESTAGE'), []);
+  const signTexture = useMemo(() => getTransomSignTexture('SPATIOVERSE'), []);
 
   const clampedDoorWidth = Math.min(Math.max(entranceWidth, 0.85), span - 0.36);
   const halfDoor = clampedDoorWidth / 2;

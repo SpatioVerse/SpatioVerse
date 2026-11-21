@@ -1,14 +1,14 @@
-# SpaceStage
+# SpatioVerse
 
 **Multimodal 3D Room & Retail Layout Studio powered by Gemini 4, Decisions API, Gemini Live Audio, and Shopify Shop MCP.**
 
-SpaceStage lets merchants and designers scan an existing room via video, photo, or YouTube clip, preserve owned furniture at `$0` spend, explore and edit a constraint-checked 3D space interactively or by live voice, visually match real Shopify products onto 3D PBR assets, and generate buyer-controlled merchant checkout links.
+SpatioVerse lets merchants and designers scan an existing room via video, photo, or YouTube clip, preserve owned furniture at `$0` spend, explore and edit a constraint-checked 3D space interactively or by live voice, visually match real Shopify products onto 3D PBR assets, and generate buyer-controlled merchant checkout links.
 
 ---
 
 ## Architecture & Gemini Model Stack
 
-SpaceStage separates multimodal perception, structured spatial planning, calibrated model selection, real-time voice interaction, deterministic geometry validation, and live commerce into auditable services communicating through a single Zod-validated `ShopScene` contract (`lib/schema.ts`).
+SpatioVerse separates multimodal perception, structured spatial planning, calibrated model selection, real-time voice interaction, deterministic geometry validation, and live commerce into auditable services communicating through a single Zod-validated `ShopScene` contract (`lib/schema.ts`).
 
 ```mermaid
 flowchart LR
@@ -188,7 +188,7 @@ tests/                           # Vitest constraint & voice editing suites
 
 - **Spatial Honesty:** Uncalibrated single-camera video/photos cannot yield millimeter-exact dimensions; `/api/analyze` flags approximate measurements (`UNVERIFIED_DIMENSIONS`) until confirmed by the user.
 - **Deterministic Geometry:** Bounds, rotated-OBB collisions, walkway clearances, and budget totals are computed in local TypeScript (`lib/constraints.ts`)—never delegated to an LLM.
-- **Buyer-Controlled Commerce:** SpaceStage never fabricates product IDs, prices, or checkout links, and never auto-completes checkout (`complete_checkout` is intentionally unused); all orders hand off to official merchant carts for buyer review.
+- **Buyer-Controlled Commerce:** SpatioVerse never fabricates product IDs, prices, or checkout links, and never auto-completes checkout (`complete_checkout` is intentionally unused); all orders hand off to official merchant carts for buyer review.
 
 ---
 
