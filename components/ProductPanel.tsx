@@ -134,6 +134,9 @@ export function ProductPanel({
   const voiceShopQuery = useSceneStore((s) => s.voiceShopQuery);
   const voiceShopProducts = useSceneStore((s) => s.voiceShopProducts);
   const voiceOrderResult = useSceneStore((s) => s.voiceOrderResult);
+  const clearObjectProduct = useSceneStore((s) => s.clearObjectProduct);
+  const toggleLock = useSceneStore((s) => s.toggleLock);
+  const setVoiceOrderResult = useSceneStore((s) => s.setVoiceOrderResult);
 
   const [customQuery, setCustomQuery] = useState<string | null>(null);
   const [fetchedProducts, setFetchedProducts] = useState<ProductRef[]>([]);
@@ -284,11 +287,11 @@ export function ProductPanel({
     });
   }, [activeProducts, loadedVariantsByProduct]);
 
-  // Separate owned fixtures ($0) from new Shopify purchases
-  const { ownedCount, shopifyObjects, newPurchaseTotalCents, totalCurrency } = useMemo(() => {
+  // Separate owned fixtures ($0) from new Shopify purchases.
+  // If any Shopify item(s) are locked, ONLY those locked item(s) go into the cart.
+  const { ownedCount, shopifyObjects, hasLockedCartSelection, newPurchaseTotalCents, totalCurrency } = useMemo(() => {
     let owned = 0;
-    const shopifyItems: SceneObject[] = [];
-    let totalCents = 0;
+    const allShopify: SceneObject[] = [];
     let currency = "USD";
 
     for (const obj of scene.objects) {
@@ -297,19 +300,37 @@ export function ProductPanel({
         continue;
       }
       if (obj.source === "shopify" && obj.product) {
-        shopifyItems.push(obj);
-        totalCents += obj.product.priceCents;
+        allShopify.push(obj);
         if (obj.product.currency) currency = obj.product.currency;
       }
     }
 
+    const lockedShopify = allShopify.filter((o) => Boolean(o.locked));
+    const cartItems = lockedShopify.length > 0 ? lockedShopify : allShopify;
+    const totalCents = cartItems.reduce(
+      (sum, o) => sum + (o.product?.priceCents ?? 0),
+      0
+    );
+
     return {
       ownedCount: owned,
-      shopifyObjects: shopifyItems,
+      shopifyObjects: cartItems,
+      hasLockedCartSelection: lockedShopify.length > 0,
       newPurchaseTotalCents: totalCents,
       totalCurrency: currency,
     };
   }, [scene.objects]);
+
+  const handleRemoveFromCart = (obj: SceneObject) => {
+    if (obj.locked) {
+      toggleLock(obj.id);
+    }
+    clearObjectProduct(obj.id);
+    setInternalCartResult(null);
+    if (voiceOrderResult) {
+      setVoiceOrderResult(null);
+    }
+  };
 
   const handleFetchVariants = async (productId: string) => {
     setLoadingVariantsFor(productId);
@@ -679,12 +700,43 @@ export function ProductPanel({
             <span className="font-medium text-zinc-300">{formatMoney(0, totalCurrency)}</span>
           </div>
           <div className="flex items-center justify-between text-sm font-semibold text-zinc-100">
-            <span>New purchases total ({shopifyObjects.length})</span>
+            <span>
+              {hasLockedCartSelection ? "Locked cart items" : "New purchases total"} ({shopifyObjects.length})
+            </span>
             <span className="text-amber-200">
               {formatMoney(newPurchaseTotalCents, totalCurrency)}
             </span>
           </div>
         </div>
+
+        {shopifyObjects.length > 0 && (
+          <ul className="mt-2 max-h-32 space-y-1 overflow-y-auto pr-0.5">
+            {shopifyObjects.map((obj) => (
+              <li
+                key={obj.id}
+                className="flex items-center justify-between gap-2 rounded-lg border border-zinc-800 bg-zinc-950/75 px-2 py-1 text-[11px]"
+              >
+                <span className="min-w-0 flex-1 truncate text-zinc-200">
+                  {obj.product?.title ?? obj.label}
+                </span>
+                <span className="shrink-0 font-medium text-amber-200">
+                  {obj.product
+                    ? formatMoney(obj.product.priceCents, obj.product.currency)
+                    : ""}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleRemoveFromCart(obj)}
+                  title="Remove item from cart"
+                  aria-label={`Remove ${obj.product?.title ?? obj.label} from cart`}
+                  className="shrink-0 cursor-pointer rounded px-1.5 py-0.5 text-[10px] font-semibold text-red-300 transition hover:bg-red-500/20 hover:text-red-200"
+                >
+                  ✕
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
 
         {shopifyObjects.length === 0 && (
           <p className="mt-2 text-[11px] text-zinc-400">
