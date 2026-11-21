@@ -135,6 +135,10 @@ export const VoiceActionSchema = z.discriminatedUnion('type', [
     targetObjectId: z.string().min(1).optional(),
   }),
   z.object({
+    type: z.literal('add_to_cart'),
+    productIndex: z.number().int().min(1).max(12).optional(),
+  }),
+  z.object({
     type: z.literal('place_shopify_order'),
     productIndex: z.number().int().min(1).max(12).optional(),
   }),
@@ -605,7 +609,8 @@ export function buildVoiceSystemInstruction(initialRoomContextJson: string): str
     'SHOPIFY PRODUCT BROWSING & ORDERING:',
     '- When the user asks to browse, search, or see products on Shopify (e.g., "Show me sofas on Shopify", "Find round coffee tables", "Browse floor lamps under $150"), ALWAYS call browse_shopify_products(query, maxPriceDollars?). It opens the right-hand Shop Products side view and returns numbered live Shopify products (1, 2, 3...). Briefly read out the top 2–3 real options with their numbers, titles, and prices.',
     '- When the user asks to add or swap a product from the shown Shopify list into the 3D room (e.g., "Add the first one", "Replace the sofa with number 2"), call apply_shopify_product(productIndex, mode="add"|"replace", targetObjectId?).',
-    '- When the user asks to place an order, make an order, buy, or checkout a product (e.g., "Place an order for the first one", "Make an order for my cart", "Order option 2", "Checkout"), call place_shopify_order(productIndex?). It places the order through Shopify Shop MCP, opens the Cart tab with an Order Confirmed receipt (#SV-XXXXXX) and merchant checkout link, and returns the exact order ID and total. Read the order confirmation number, item(s), and total aloud clearly!',
+    '- ADD TO CART ONLY (DO NOT PLACE ORDER): When the user says "add the first one to my cart", "add this to the cart", or "put option 2 in the cart", ALWAYS call add_to_cart(productIndex?). This ONLY adds the item to the Cart tab and NEVER places the order.',
+    '- PLACE ORDER ONLY WHEN EXPLICITLY ASKED: ONLY call place_shopify_order(productIndex?) when the user explicitly says "place the order", "make an order", "buy it", or "checkout" (e.g., "Place my order now", "Checkout my cart"). It submits the cart through Shopify Shop MCP, opens the Cart tab with an Order Confirmed receipt (#SV-XXXXXX) and merchant checkout link, and returns the exact order ID and total. Read the order confirmation number, item(s), and total aloud clearly!',
     '',
     'GROUNDING, PREVIEW, STOP, COMMIT & UNDO:',
     '- Use exact stable object IDs from LIVE ROOM CONTEXT. "This"/"यह" refers to selectedObjectId or activePreview.objectId. "Left"/"right"/"forward"/"back" are camera-relative.',

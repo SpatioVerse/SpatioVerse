@@ -271,15 +271,29 @@ const LIVE_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
     },
   },
   {
-    name: 'place_shopify_order',
+    name: 'add_to_cart',
     description:
-      'Create a live Shopify merchant order / checkout cart for a numbered product from the Shop Products list or for all Shopify items currently placed in the 3D room, and open the side view with the checkout link.',
+      'Add a numbered Shopify product from the Shop list (or the currently selected Shopify item in the 3D room) into the Cart tab WITHOUT placing an order.',
     parameters: {
       type: Type.OBJECT,
       properties: {
         productIndex: {
           type: Type.INTEGER,
-          description: 'Optional 1-based product index from the browsed Shopify list. Omit to order all Shopify products currently placed in the room.',
+          description: 'Optional 1-based product index from the browsed Shopify list. Omit to add the currently selected Shopify object in the 3D scene.',
+        },
+      },
+    },
+  },
+  {
+    name: 'place_shopify_order',
+    description:
+      'ONLY when the user explicitly asks to place/submit/complete the order or checkout: create the live Shopify merchant order for the Cart items (or a specified productIndex), show the Order Confirmed receipt (#SV-XXXXXX), and open the Cart tab.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        productIndex: {
+          type: Type.INTEGER,
+          description: 'Optional 1-based product index from the browsed Shopify list. Omit to order all items currently in the Cart.',
         },
       },
     },

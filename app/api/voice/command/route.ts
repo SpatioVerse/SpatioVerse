@@ -228,6 +228,14 @@ const RESPONSE_JSON_SCHEMA = {
           {
             type: 'object',
             properties: {
+              type: { const: 'add_to_cart' },
+              productIndex: { type: 'integer', minimum: 1, maximum: 12 },
+            },
+            required: ['type'],
+          },
+          {
+            type: 'object',
+            properties: {
               type: { const: 'place_shopify_order' },
               productIndex: { type: 'integer', minimum: 1, maximum: 12 },
             },

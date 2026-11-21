@@ -551,6 +551,52 @@ export function executeVoiceAction(
       };
     }
 
+    case 'add_to_cart': {
+      if (typeof action.productIndex === 'number') {
+        const product = store.voiceShopProducts[action.productIndex - 1];
+        if (!product) {
+          return {
+            ok: false,
+            actionType: action.type,
+            summary: `No Shopify product #${action.productIndex} is loaded. Browse products first.`,
+          };
+        }
+        const alreadyIn = store.voiceOrderItems.some(
+          (p) => p.variantId === product.variantId
+        );
+        if (!alreadyIn) {
+          store.setVoiceOrderItems([...store.voiceOrderItems, product]);
+        }
+        store.setRightPanelTab('cart');
+        return {
+          ok: true,
+          actionType: action.type,
+          summary: `Added ${product.title} (${formatPriceDollars(product.priceCents, product.currency)}) to your Cart. Say "place my order" whenever you're ready to check out.`,
+        };
+      }
+
+      const selectedObj = store.selectedId
+        ? store.scene.objects.find((o) => o.id === store.selectedId)
+        : null;
+      if (selectedObj && selectedObj.source === 'shopify' && selectedObj.product) {
+        store.addToCart(selectedObj.id);
+        store.setRightPanelTab('cart');
+        return {
+          ok: true,
+          actionType: action.type,
+          objectId: selectedObj.id,
+          summary: `Added ${selectedObj.product.title} (${formatPriceDollars(selectedObj.product.priceCents, selectedObj.product.currency)}) to your Cart. Say "place my order" whenever you're ready.`,
+        };
+      }
+
+      return {
+        ok: false,
+        actionType: action.type,
+        summary:
+          'Tell me which product number to add to your cart, or select a Shopify item in the room first.',
+      };
+    }
+
     case 'place_shopify_order': {
       store.requestOpenShopDrawer();
       return {
@@ -952,13 +998,19 @@ export async function executeVoiceActionAsync(
       }
       chosenProducts.push(p);
     } else {
+      const cartIdSet = new Set(store.cartObjectIds);
+      const seenVariantIds = new Set<string>();
       for (const obj of store.scene.objects) {
-        if (obj.source === 'shopify' && obj.product) {
+        if (obj.source === 'shopify' && obj.product && cartIdSet.has(obj.id)) {
           chosenProducts.push(obj.product);
+          seenVariantIds.add(obj.product.variantId);
         }
       }
-      if (chosenProducts.length === 0 && store.voiceShopProducts.length > 0) {
-        chosenProducts.push(store.voiceShopProducts[0]);
+      for (const p of store.voiceOrderItems) {
+        if (!seenVariantIds.has(p.variantId)) {
+          chosenProducts.push(p);
+          seenVariantIds.add(p.variantId);
+        }
       }
     }
 
