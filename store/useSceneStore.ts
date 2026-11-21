@@ -334,12 +334,16 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
         ? record.activePreset
         : get().activePreset;
       const validator = get().validator;
+      const initialCartIds = validScene.objects
+        .filter((o) => o.source === 'shopify' && Boolean(o.product) && Boolean(o.locked))
+        .map((o) => o.id);
 
       set({
         scene: validScene,
         activePreset: validPreset,
         selectedId: null,
         isDragging: false,
+        cartObjectIds: initialCartIds,
         issues: validator(validScene),
         hydrated: true,
       });
