@@ -1,27 +1,32 @@
-import type {
-  ConstraintIssue,
-  SceneObject,
-  ShopScene,
-  Vec3,
-} from './schema';
+import {
+  FT_TO_METERS,
+  type ConstraintIssue,
+  type SceneObject,
+  type SceneValidator,
+  type ShopScene,
+  type Vec3,
+} from '@/lib/schema';
 
 /**
  * SpaceStage Spatial & Commerce Constraint Engine
  *
- * Conventions (Section 4):
- * - All lengths are in meters (1 ft = 0.3048 m; 3 ft walkway = 0.9144 m).
- * - Floor plane uses X (width: west -> east) and Z (depth: north -> south); Y is vertical up.
- * - Default room origin ('center'): floor spans X in [-width/2, +width/2], Z in [-depth/2, +depth/2],
- *   matching Three.js / React Three Fiber plane centering. Pass `{ origin: 'corner' }` if evaluating
- *   scenes defined in [0, width] x [0, depth].
- * - `rotationY` is in radians around +Y (values with |rotationY| > 2*pi are defensively converted from degrees).
+ * Conventions (aligned with `lib/schema.ts` & `TEAM_INTEGRATION.md`):
+ * - All lengths are in meters (`FT_TO_METERS = 0.3048`; 3 ft walkway = `0.9144` m).
+ * - Floor is on the X/Z plane at Y = 0, centered at (0, 0):
+ *     X in [-room.width / 2, +room.width / 2]
+ *     Z in [-room.depth / 2, +room.depth / 2]
+ *     Y in [0, room.height]
+ * - Walls: `north` (z = -depth/2), `south` (z = +depth/2),
+ *          `west` (x = -width/2), `east` (x = +width/2).
+ * - `SceneObject.position`: `[x, y, z]` where `x, z` is footprint center and `y` is bottom elevation (`0` = floor).
+ * - `SceneObject.rotationY`: counter-clockwise radians around +Y.
  * - Prices are integer cents; `source === 'owned'` objects always contribute 0 cents to new purchases.
  */
 
-export const FEET_TO_METERS = 0.3048;
-export const DEFAULT_MIN_WALKWAY_METERS = 3 * FEET_TO_METERS; // 0.9144 m (3 ft)
+export const FEET_TO_METERS = FT_TO_METERS;
+export const DEFAULT_MIN_WALKWAY_METERS = Number((3 * FT_TO_METERS).toFixed(4)); // 0.9144 m
 
-const EPS = 1e-3; // 1 mm geometric tolerance so flush items touching walls/each other are allowed
+const GEOM_EPS = 1e-3; // 1 mm geometric tolerance so flush items touching walls/each other are valid
 const ELEVATED_THRESHOLD_M = 0.05; // > 5 cm above floor counts as elevated unless supported
 
 export type CoordinateOrigin = 'center' | 'corner';
@@ -54,9 +59,9 @@ export interface RoomBounds2D {
 export interface OBB2D {
   center: [number, number];
   halfExtents: [number, number];
-  /** Unit axis along local X in world (X, Z) */
+  /** Unit axis along local +X in world (X, Z) */
   axisU: [number, number];
-  /** Unit axis along local Z in world (X, Z) */
+  /** Unit axis along local +Z in world (X, Z) */
   axisV: [number, number];
   corners: Array<[number, number]>;
 }
@@ -65,7 +70,7 @@ const DRILLING_KEYWORDS =
   /\b(wall[- ]?mount(?:ed)?|floating\s+shelf|ceiling[- ]?mount(?:ed)?|hanging|pendant|sconce|drilled|screw[- ]?in|anchored|wall[- ]?bracket|wall[- ]?hung)\b/i;
 
 const NON_DRILLING_QUALIFIERS =
-  /\b(freestanding|free[- ]?standing|floor[- ]?standing|tabletop|countertop|leaning|easel|adhesive|command[- ]?strip|suction|tension)\b/i;
+  /\b(freestanding|free[- ]?standing|floor[- ]?standing|floor[- ]?leaning|tabletop|countertop|leaning|easel|adhesive|command[- ]?strip|suction|tension)\b/i;
 
 const SUPPORT_SURFACE_KINDS = new Set<SceneObject['kind']>([
   'counter',
@@ -79,6 +84,13 @@ const PRIMARY_SHOP_FIXTURE_KINDS = new Set<SceneObject['kind']>([
   'table',
   'rack',
 ]);
+
+function formatCents(cents: number): string {
+  return `$${(cents / 100).toLocaleString('en-US', {
+    minimumFractionDigits: cents % 100 === 0 ? 0 : 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
 
 export function normalizeRadians(rotationY: number): number {
   if (!Number.isFinite(rotationY)) return 0;
@@ -109,25 +121,12 @@ export function getRoomBounds(
 }
 
 /**
- * Resolves [bottomY, topY] supporting both bottom-origin (y = 0 on floor)
- * and mesh-center-origin (y = size[1]/2 on floor) R3F conventions cleanly.
+ * Returns `[minY, maxY]` in meters where `position[1]` is bottom elevation (`0` = floor).
  */
 export function getVerticalSpan(obj: SceneObject): [number, number] {
-  const [, rawY] = obj.position;
-  const [, height] = obj.size;
-  const h = Math.max(0, height);
-
-  if (Math.abs(rawY) <= 0.02) {
-    return [rawY, rawY + h];
-  }
-  if (Math.abs(rawY - h / 2) <= 0.02) {
-    return [0, h];
-  }
-  if (rawY < 0) {
-    return [rawY, rawY + h];
-  }
-  // Elevated object: treat y as center when h > 0 and y >= h/2, keeping bottom strictly > 0
-  return [rawY - h / 2, rawY + h / 2];
+  const minY = obj.position[1];
+  const height = Math.max(0, obj.size[1]);
+  return [minY, minY + height];
 }
 
 export function getObjectOBB2D(obj: SceneObject): OBB2D {
@@ -138,7 +137,8 @@ export function getObjectOBB2D(obj: SceneObject): OBB2D {
   const cos = Math.cos(theta);
   const sin = Math.sin(theta);
 
-  // Three.js right-handed rotation around +Y: local +X -> (cos, -sin), local +Z -> (sin, cos)
+  // Matches Three.js Y-up right-handed rotation around +Y:
+  // local +X -> (cos, -sin), local +Z -> (sin, cos)
   const axisU: [number, number] = [cos, -sin];
   const axisV: [number, number] = [sin, cos];
 
@@ -174,12 +174,12 @@ function projectCorners(
 
 /**
  * Exact 2D Separating Axis Theorem (SAT) intersection check for two rotated rectangles.
- * Touching edges within ` shrinkTolerance ` (default 1 mm) are NOT treated as colliding.
+ * Touching edges within `shrinkTolerance` (default 1 mm) are NOT treated as colliding.
  */
 export function obbIntersectsOBB(
   a: OBB2D,
   b: OBB2D,
-  shrinkTolerance: number = EPS
+  shrinkTolerance: number = GEOM_EPS
 ): boolean {
   const axes: Array<[number, number]> = [
     a.axisU,
@@ -211,12 +211,16 @@ export function distancePointToOBB(
   const localU = dx * obb.axisU[0] + dz * obb.axisU[1];
   const localV = dx * obb.axisV[0] + dz * obb.axisV[1];
 
-  const clampedU = Math.max(-obb.halfExtents[0], Math.min(obb.halfExtents[0], localU));
-  const clampedV = Math.max(-obb.halfExtents[1], Math.min(obb.halfExtents[1], localV));
+  const clampedU = Math.max(
+    -obb.halfExtents[0],
+    Math.min(obb.halfExtents[0], localU)
+  );
+  const clampedV = Math.max(
+    -obb.halfExtents[1],
+    Math.min(obb.halfExtents[1], localV)
+  );
 
-  const excessU = localU - clampedU;
-  const excessV = localV - clampedV;
-  return Math.hypot(excessU, excessV);
+  return Math.hypot(localU - clampedU, localV - clampedV);
 }
 
 function makeAxisAlignedOBB(
@@ -245,7 +249,7 @@ function makeAxisAlignedOBB(
 
 /**
  * Computes the entrance doorway center along its wall and the required clear vestibule rectangle
- * extending `clearanceDepth` (e.g. 3 ft = 0.9144 m) inward from the doorway.
+ * extending `clearanceDepth` (3 ft = 0.9144 m) inward from the doorway.
  */
 export function getEntranceClearanceOBB(
   room: ShopScene['room'],
@@ -261,17 +265,15 @@ export function getEntranceClearanceOBB(
   const doorWidth = Math.max(rawDoorWidth || DEFAULT_MIN_WALKWAY_METERS, 0.5);
   const clearanceWidth = Math.max(doorWidth, minWalkwayWidth);
   const clearanceDepth = Math.min(
-    Math.max(minWalkwayWidth, DEFAULT_MIN_WALKWAY_METERS),
+    Math.max(minWalkwayWidth, 0.75),
     wall === 'north' || wall === 'south' ? room.depth : room.width
   );
 
   if (wall === 'north' || wall === 'south') {
-    const wallCenter = origin === 'center' ? 0 : offset;
-    const rawCenterX = origin === 'center' ? offset : wallCenter;
     const halfW = clearanceWidth / 2;
     const centerX = Math.max(
       bounds.minX + Math.min(halfW, room.width / 2),
-      Math.min(bounds.maxX - Math.min(halfW, room.width / 2), rawCenterX)
+      Math.min(bounds.maxX - Math.min(halfW, room.width / 2), offset)
     );
     const minX = Math.max(bounds.minX, centerX - halfW);
     const maxX = Math.min(bounds.maxX, centerX + halfW);
@@ -300,15 +302,13 @@ export function getEntranceClearanceOBB(
     };
   }
 
-  // East or West wall
-  const rawCenterZ = offset;
   const halfW = clearanceWidth / 2;
   const centerZ = Math.max(
     bounds.minZ + Math.min(halfW, room.depth / 2),
-    Math.min(bounds.maxZ - Math.min(halfW, room.depth / 2), rawCenterZ)
+    Math.min(bounds.maxZ - Math.min(halfW, room.depth / 2), offset)
   );
   const minZ = Math.max(bounds.minZ, centerZ - halfW);
-  const maxZ = Math.min(bounds.maxZ, centerZ + halfW);
+  const clampedMaxZ = Math.min(bounds.maxZ, centerZ + halfW);
 
   if (wall === 'west') {
     return {
@@ -316,7 +316,7 @@ export function getEntranceClearanceOBB(
         bounds.minX,
         bounds.minX + clearanceDepth,
         minZ,
-        maxZ
+        clampedMaxZ
       ),
       doorCenter: [bounds.minX, centerZ],
       inwardDir: [1, 0],
@@ -327,7 +327,7 @@ export function getEntranceClearanceOBB(
       bounds.maxX - clearanceDepth,
       bounds.maxX,
       minZ,
-      maxZ
+      clampedMaxZ
     ),
     doorCenter: [bounds.maxX, centerZ],
     inwardDir: [-1, 0],
@@ -375,12 +375,13 @@ function checkWalkwayConnectivity(
 
   const bounds = getRoomBounds(room, origin);
   const radius = minWalkwayWidth / 2;
-  const step = 0.06; // 6 cm grid (~61x51 cells for 12x10 ft -> <0.3 ms)
+  const step = 0.05; // 5 cm grid resolution (~0.3 ms execution)
+  const clearanceMargin = 0.025; // half-grid-cell discretization allowance
 
-  const usableMinX = bounds.minX + radius - EPS;
-  const usableMaxX = bounds.maxX - radius + EPS;
-  const usableMinZ = bounds.minZ + radius - EPS;
-  const usableMaxZ = bounds.maxZ - radius + EPS;
+  const usableMinX = bounds.minX + radius - GEOM_EPS;
+  const usableMaxX = bounds.maxX - radius + GEOM_EPS;
+  const usableMinZ = bounds.minZ + radius - GEOM_EPS;
+  const usableMaxZ = bounds.maxZ - radius + GEOM_EPS;
 
   const cols = Math.max(1, Math.floor((usableMaxX - usableMinX) / step) + 1);
   const rows = Math.max(1, Math.floor((usableMaxZ - usableMinZ) / step) + 1);
@@ -397,7 +398,7 @@ function checkWalkwayConnectivity(
       const x = cellX(c);
       let ok = true;
       for (const { obb } of floorObstacles) {
-        if (distancePointToOBB(x, z, obb) < radius - 0.01) {
+        if (distancePointToOBB(x, z, obb) < radius - clearanceMargin) {
           ok = false;
           break;
         }
@@ -420,7 +421,6 @@ function checkWalkwayConnectivity(
     Math.min(usableMaxZ, doorCenter[1] + inwardDir[1] * radius)
   );
 
-  // Seed BFS with free cells within doorway entry band
   const visited = new Uint8Array(rows * cols);
   const queue: number[] = [];
   const seedBand = Math.max(room.entrance.width / 2, step * 1.5);
@@ -439,7 +439,7 @@ function checkWalkwayConnectivity(
         Math.abs(inwardDir[0]) > 0
           ? Math.abs(z - entryTargetZ)
           : Math.abs(x - entryTargetX);
-      if (distAlongNormal <= step * 1.5 && distAlongWall <= seedBand) {
+      if (distAlongNormal <= step * 1.6 && distAlongWall <= seedBand) {
         visited[idx] = 1;
         queue.push(idx);
       }
@@ -447,7 +447,6 @@ function checkWalkwayConnectivity(
   }
 
   if (queue.length === 0) {
-    // Identify obstacles closest to the entrance threshold
     const culprits = floorObstacles
       .filter(
         ({ obb }) =>
@@ -462,7 +461,7 @@ function checkWalkwayConnectivity(
     };
   }
 
-  // Run 4-connected BFS across the navigable configuration space
+  // 8-connected BFS across navigable 3ft walkway configuration space
   let head = 0;
   let maxPenetration = 0;
   while (head < queue.length) {
@@ -476,16 +475,17 @@ function checkWalkwayConnectivity(
       (x - doorCenter[0]) * inwardDir[0] + (z - doorCenter[1]) * inwardDir[1];
     if (pen > maxPenetration) maxPenetration = pen;
 
-    const neighbors = [
-      r > 0 ? (r - 1) * cols + c : -1,
-      r + 1 < rows ? (r + 1) * cols + c : -1,
-      c > 0 ? r * cols + (c - 1) : -1,
-      c + 1 < cols ? r * cols + (c + 1) : -1,
-    ];
-    for (const nIdx of neighbors) {
-      if (nIdx >= 0 && free[nIdx] && !visited[nIdx]) {
-        visited[nIdx] = 1;
-        queue.push(nIdx);
+    for (let dr = -1; dr <= 1; dr++) {
+      for (let dc = -1; dc <= 1; dc++) {
+        if (dr === 0 && dc === 0) continue;
+        const nr = r + dr;
+        const nc = c + dc;
+        if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;
+        const nIdx = nr * cols + nc;
+        if (free[nIdx] && !visited[nIdx]) {
+          visited[nIdx] = 1;
+          queue.push(nIdx);
+        }
       }
     }
   }
@@ -498,7 +498,6 @@ function checkWalkwayConnectivity(
   );
 
   if (maxPenetration + step < requiredPenetration) {
-    // Find fixtures pinching the corridor between entrance and room center
     const midX = (bounds.minX + bounds.maxX) / 2;
     const midZ = (bounds.minZ + bounds.maxZ) / 2;
     const culprits = floorObstacles
@@ -516,9 +515,8 @@ function checkWalkwayConnectivity(
     };
   }
 
-  // Check that every primary retail fixture can be approached from the reachable 3ft walkway
-  // Browser reach: shopper center is `radius` away from fixture edge + up to 0.35m comfortable reach margin
-  const maxApproachDist = radius + 0.35;
+  // Ensure every primary retail fixture can be approached from the continuous 3ft walkway
+  const maxApproachDist = radius + 0.45;
   const unreachableIds: string[] = [];
 
   for (const { obj, obb } of floorObstacles) {
@@ -550,11 +548,9 @@ function checkWalkwayConnectivity(
 }
 
 /**
- * Deterministically validates a `ShopScene` against physical bounds, rotated OBB collisions,
- * 3ft entrance & interior walkway access, new-purchase budget, no-drilling rules,
- * and dimension verification status.
+ * Evaluates all geometric and commerce rules and returns `{ valid, issues, summary }`.
  */
-export function validateScene(
+export function evaluateScene(
   scene: ShopScene,
   options: ValidateSceneOptions = {}
 ): ValidationResult {
@@ -572,7 +568,7 @@ export function validateScene(
     verticalSpan: getVerticalSpan(obj),
   }));
 
-  // 1. OUT_OF_BOUNDS checks (footprint corners + vertical room height + positive dimensions)
+  // 1. OUT_OF_BOUNDS, NO_DRILLING, and UNVERIFIED_DIMENSIONS
   for (const { obj, obb, verticalSpan } of objectGeometry) {
     const [w, h, d] = obj.size;
     if (
@@ -586,38 +582,55 @@ export function validateScene(
       issues.push({
         code: 'OUT_OF_BOUNDS',
         objectIds: [obj.id],
-        message: `"${obj.label}" (${obj.id}) has invalid non-positive dimensions [${w}, ${h}, ${d}].`,
+        message: `${obj.label} has invalid non-positive dimensions.`,
         severity: 'error',
       });
       continue;
     }
 
     const outX = obb.corners.some(
-      ([x]) => x < bounds.minX - EPS || x > bounds.maxX + EPS
+      ([x]) => x < bounds.minX - GEOM_EPS || x > bounds.maxX + GEOM_EPS
     );
     const outZ = obb.corners.some(
-      ([, z]) => z < bounds.minZ - EPS || z > bounds.maxZ + EPS
+      ([, z]) => z < bounds.minZ - GEOM_EPS || z > bounds.maxZ + GEOM_EPS
     );
-    const [bottomY, topY] = verticalSpan;
-    const outY = bottomY < -0.02 || topY > scene.room.height + EPS;
+    const [minY, maxY] = verticalSpan;
+    const outY = minY < -GEOM_EPS || maxY > scene.room.height + GEOM_EPS;
 
     if (outX || outZ || outY) {
-      const reasons: string[] = [];
-      if (outX || outZ) {
-        reasons.push(
-          `footprint extends outside the ${scene.room.width.toFixed(2)}m x ${scene.room.depth.toFixed(2)}m floor boundary`
-        );
-      }
-      if (outY) {
-        reasons.push(
-          `vertical span [${bottomY.toFixed(2)}m, ${topY.toFixed(2)}m] exceeds floor/ceiling [0m, ${scene.room.height.toFixed(2)}m]`
-        );
-      }
       issues.push({
         code: 'OUT_OF_BOUNDS',
         objectIds: [obj.id],
-        message: `"${obj.label}" (${obj.id}) is out of bounds: ${reasons.join(' and ')}.`,
+        message: `${obj.label} extends outside the room envelope.`,
         severity: 'error',
+      });
+    }
+
+    if (scene.noDrilling) {
+      const hasDrillLabel =
+        DRILLING_KEYWORDS.test(obj.label) &&
+        !NON_DRILLING_QUALIFIERS.test(obj.label);
+      const isElevatedUnsupported =
+        minY > ELEVATED_THRESHOLD_M &&
+        !isSupportedBySurface(obj, minY, scene.objects) &&
+        !NON_DRILLING_QUALIFIERS.test(obj.label);
+
+      if (hasDrillLabel || isElevatedUnsupported) {
+        issues.push({
+          code: 'NO_DRILLING',
+          objectIds: [obj.id],
+          message: `${obj.label} requires wall/ceiling drilling or is suspended above the floor (no-drilling lease enabled).`,
+          severity: 'error',
+        });
+      }
+    }
+
+    if (!obj.dimensionsVerified) {
+      issues.push({
+        code: 'UNVERIFIED_DIMENSIONS',
+        objectIds: [obj.id],
+        message: `${obj.label} uses estimated dimensions until verified against a product spec.`,
+        severity: 'warning',
       });
     }
   }
@@ -630,10 +643,10 @@ export function validateScene(
 
       const [minYA, maxYA] = a.verticalSpan;
       const [minYB, maxYB] = b.verticalSpan;
-      const verticalOverlap = minYA < maxYB - EPS && minYB < maxYA - EPS;
+      const verticalOverlap =
+        minYA < maxYB - GEOM_EPS && minYB < maxYA - GEOM_EPS;
       if (!verticalOverlap) continue;
 
-      // Exempt small decor/lamps resting cleanly on top of a supporting fixture
       const aOnB =
         SUPPORT_SURFACE_KINDS.has(b.obj.kind) &&
         !PRIMARY_SHOP_FIXTURE_KINDS.has(a.obj.kind) &&
@@ -644,20 +657,20 @@ export function validateScene(
         Math.abs(minYB - maxYA) <= 0.08;
       if (aOnB || bOnA) continue;
 
-      if (obbIntersectsOBB(a.obb, b.obb, EPS)) {
+      if (obbIntersectsOBB(a.obb, b.obb, GEOM_EPS)) {
         issues.push({
           code: 'COLLISION',
           objectIds: [a.obj.id, b.obj.id],
-          message: `"${a.obj.label}" (${a.obj.id}) collides with "${b.obj.label}" (${b.obj.id}).`,
+          message: `${a.obj.label} overlaps with ${b.obj.label}.`,
           severity: 'error',
         });
       }
     }
   }
 
-  // 3. BLOCKED_PATH checks (entrance clearance box + 3ft continuous interior walkway BFS)
+  // 3. BLOCKED_PATH checks (entrance clearance zone + continuous 3ft walkway BFS)
   const floorObstacles = objectGeometry.filter(
-    ({ verticalSpan }) => verticalSpan[0] < 2.0
+    ({ verticalSpan }) => verticalSpan[0] < 2.1
   );
   const { clearanceOBB } = getEntranceClearanceOBB(
     scene.room,
@@ -665,20 +678,19 @@ export function validateScene(
     origin
   );
 
-  const entranceBlockingIds: string[] = [];
-  for (const { obj, obb } of floorObstacles) {
-    if (obbIntersectsOBB(obb, clearanceOBB, EPS)) {
-      entranceBlockingIds.push(obj.id);
-    }
-  }
+  const entranceBlockingObjs = floorObstacles.filter(({ obb }) =>
+    obbIntersectsOBB(obb, clearanceOBB, GEOM_EPS)
+  );
 
-  if (entranceBlockingIds.length > 0) {
-    issues.push({
-      code: 'BLOCKED_PATH',
-      objectIds: entranceBlockingIds,
-      message: `Entrance on ${scene.room.entrance.wall} wall is obstructed; keep at least ${minWalkwayWidth.toFixed(2)}m (3 ft) clear inside the doorway (blocked by: ${entranceBlockingIds.join(', ')}).`,
-      severity: 'error',
-    });
+  if (entranceBlockingObjs.length > 0) {
+    for (const { obj } of entranceBlockingObjs) {
+      issues.push({
+        code: 'BLOCKED_PATH',
+        objectIds: [obj.id],
+        message: `${obj.label} obstructs the ${scene.room.entrance.wall} entrance clearance zone.`,
+        severity: 'error',
+      });
+    }
   } else if (floorObstacles.length > 0) {
     const connectivity = checkWalkwayConnectivity(
       scene,
@@ -698,84 +710,25 @@ export function validateScene(
     }
   }
 
-  // 4. NO_DRILLING checks
-  if (scene.noDrilling) {
-    for (const { obj, verticalSpan } of objectGeometry) {
-      const [bottomY] = verticalSpan;
-      const hasDrillLabel =
-        DRILLING_KEYWORDS.test(obj.label) &&
-        !NON_DRILLING_QUALIFIERS.test(obj.label);
-      const isUnqualifiedWallArt =
-        obj.kind === 'art' && !NON_DRILLING_QUALIFIERS.test(obj.label);
-      const isFloatingUnsupported =
-        bottomY > ELEVATED_THRESHOLD_M &&
-        !isSupportedBySurface(obj, bottomY, scene.objects) &&
-        !NON_DRILLING_QUALIFIERS.test(obj.label);
-
-      if (hasDrillLabel || isUnqualifiedWallArt || isFloatingUnsupported) {
-        issues.push({
-          code: 'NO_DRILLING',
-          objectIds: [obj.id],
-          message: `"${obj.label}" (${obj.id}) requires wall/ceiling mounting or is suspended at ${bottomY.toFixed(2)}m while noDrilling is enabled.`,
-          severity: 'error',
-        });
-      }
-    }
-  }
-
-  // 5. OVER_BUDGET check (owned objects always cost $0 toward new purchases)
+  // 4. OVER_BUDGET check (owned objects always contribute 0 cents)
   let newPurchaseCents = 0;
   const purchasedObjectIds: string[] = [];
 
   for (const obj of scene.objects) {
-    if (obj.source === 'owned') continue;
-    const priceCents = obj.product?.priceCents;
-    if (typeof priceCents === 'number' && Number.isFinite(priceCents) && priceCents > 0) {
-      newPurchaseCents += Math.round(priceCents);
+    if (obj.source !== 'owned' && obj.product) {
+      newPurchaseCents += Math.round(obj.product.priceCents);
       purchasedObjectIds.push(obj.id);
     }
   }
 
   if (newPurchaseCents > scene.budgetCents) {
-    const spentDollars = (newPurchaseCents / 100).toFixed(2);
-    const budgetDollars = (scene.budgetCents / 100).toFixed(2);
-    const overDollars = ((newPurchaseCents - scene.budgetCents) / 100).toFixed(2);
+    const overCents = newPurchaseCents - scene.budgetCents;
     issues.push({
       code: 'OVER_BUDGET',
       objectIds: purchasedObjectIds,
-      message: `New fixture purchases total $${spentDollars}, exceeding the $${budgetDollars} budget by $${overDollars}.`,
+      message: `Selected purchases (${formatCents(newPurchaseCents)}) exceed the ${formatCents(scene.budgetCents)} budget by ${formatCents(overCents)}.`,
       severity: 'error',
     });
-  }
-
-  // 6. UNVERIFIED_DIMENSIONS warnings (never treated as verified pass without warning)
-  const unverifiedObjects = scene.objects.filter((obj) => !obj.dimensionsVerified);
-  if (unverifiedObjects.length > 0) {
-    issues.push({
-      code: 'UNVERIFIED_DIMENSIONS',
-      objectIds: unverifiedObjects.map((o) => o.id),
-      message: `Physical dimensions are unverified/approximate for ${unverifiedObjects.length} item(s) (${unverifiedObjects.map((o) => `"${o.label}"`).join(', ')}); confirm measurements before purchase.`,
-      severity: 'warning',
-    });
-  }
-
-  // Also flag non-owned proposals missing live product pricing as a transparent warning
-  const unpricedProposals = scene.objects.filter(
-    (obj) =>
-      obj.source !== 'owned' &&
-      (obj.product === undefined || typeof obj.product.priceCents !== 'number')
-  );
-  if (unpricedProposals.length > 0) {
-    // Only emit UNVERIFIED_DIMENSIONS if not already covered, or append clear note so budget audit is honest
-    const uncovered = unpricedProposals.filter((o) => o.dimensionsVerified);
-    if (uncovered.length > 0) {
-      issues.push({
-        code: 'UNVERIFIED_DIMENSIONS',
-        objectIds: uncovered.map((o) => o.id),
-        message: `Proposed item(s) (${uncovered.map((o) => `"${o.label}"`).join(', ')}) are generic placeholders not yet linked to a verified Shopify product/price.`,
-        severity: 'warning',
-      });
-    }
   }
 
   const errorCount = issues.filter((i) => i.severity === 'error').length;
@@ -795,20 +748,18 @@ export function validateScene(
 }
 
 /**
- * Convenience helper returning just the ConstraintIssue array for UI callbacks.
+ * Primary `SceneValidator` export (`(scene: ShopScene) => ConstraintIssue[]`),
+ * directly pluggable into `<SpaceCanvas validator={validateScene} />` and
+ * `useSceneStore.getState().setValidator(validateScene)`.
  */
-export function getConstraintIssues(
-  scene: ShopScene,
-  options?: ValidateSceneOptions
-): ConstraintIssue[] {
-  return validateScene(scene, options).issues;
-}
+export const validateScene: SceneValidator = (
+  scene: ShopScene
+): ConstraintIssue[] => {
+  return evaluateScene(scene).issues;
+};
 
-/**
- * Helper to convert Vec3 / scalar measurements from feet to meters.
- */
 export function feetToMeters(feet: number): number {
-  return Number((feet * FEET_TO_METERS).toFixed(4));
+  return Number((feet * FT_TO_METERS).toFixed(4));
 }
 
 export function clampPositionToRoom(

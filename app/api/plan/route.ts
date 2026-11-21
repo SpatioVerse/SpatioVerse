@@ -5,9 +5,8 @@ import {
   generateShopPlan,
   PLAN_MODEL_ID,
   PlanRequestSchema,
-} from '../../../lib/gemini';
+} from '@/lib/gemini';
 
-export const runtime = 'nodejs';
 export const maxDuration = 90;
 
 export async function POST(request: Request): Promise<NextResponse> {
@@ -34,7 +33,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   const parsed = PlanRequestSchema.safeParse(rawBody);
   if (!parsed.success) {
     const detail = parsed.error.issues
-      .map((i) => `${i.path.join('.') || 'body'}: ${i.message}`)
+      .map((i) => `${i.path.map(String).join('.') || 'body'}: ${i.message}`)
       .join('; ');
     return NextResponse.json(
       {

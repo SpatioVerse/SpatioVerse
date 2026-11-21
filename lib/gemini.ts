@@ -4,32 +4,38 @@ import {
   createPartFromUri,
 } from '@google/genai';
 import { z } from 'zod';
-import type {
-  ConstraintIssue,
-  ProductRef,
-  SceneObject,
-  ShopScene,
-  Vec3,
-} from './schema';
+import {
+  FT_TO_METERS,
+  ProductRefSchema,
+  ShopSceneSchema,
+  type ConstraintIssue,
+  type ProductRef,
+  type SceneObject,
+  type ShopScene,
+  type Vec3,
+} from '@/lib/schema';
 import {
   DEFAULT_MIN_WALKWAY_METERS,
-  validateScene,
-} from './constraints';
+  evaluateScene,
+} from '@/lib/constraints';
 
 export const HYDROGEN_MODEL_ID = 'gemini-4-hydrogen' as const;
 export const NEON_MODEL_ID = 'gemini-4-neon' as const;
 
 /**
  * Benchmarked optimal model assignment satisfying the mandatory 2-model Gemini 4 rule:
- * - /api/analyze (one-time media observation): `gemini-4-neon` (~10.5s, 3/3 recall, 0 false positives)
- * - /api/plan (interactive 3D layout + 1-pass repair): `gemini-4-hydrogen` (~10.8s plan, ~6.3s repair, 100% pass rate)
+ * - `/api/analyze`: `gemini-4-neon` (~10.5s, 3/3 fixture recall, 0 false positives)
+ * - `/api/plan`: `gemini-4-hydrogen` (~10.8s layout, ~6.3s repair, 100% pass rate)
+ * Supports optional server env overrides (`ANALYZE_MODEL_ID` / `PLAN_MODEL_ID`).
  */
-export const ANALYZE_MODEL_ID = NEON_MODEL_ID;
-export const PLAN_MODEL_ID = HYDROGEN_MODEL_ID;
+export const ANALYZE_MODEL_ID: string =
+  process.env.ANALYZE_MODEL_ID?.trim() || NEON_MODEL_ID;
+export const PLAN_MODEL_ID: string =
+  process.env.PLAN_MODEL_ID?.trim() || HYDROGEN_MODEL_ID;
 
 /**
  * Files larger than 14 MB use the Gemini Files API instead of inline base64
- * (since base64 adds ~33% overhead and Gemini's inline request cap is 20 MB).
+ * (base64 adds ~33% overhead and Gemini's inline request cap is 20 MB).
  */
 export const INLINE_MEDIA_MAX_BYTES = 14 * 1024 * 1024;
 export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
@@ -40,6 +46,7 @@ export const ALLOWED_MEDIA_MIMES = new Set([
   'image/webp',
   'video/mp4',
   'video/webm',
+  'video/quicktime',
 ]);
 
 export type GeminiErrorCode =
@@ -94,7 +101,10 @@ export function logGeminiEvent(event: {
   console.info(JSON.stringify(payload));
 }
 
-export function getGeminiClient(requestId: string, modelAttempted?: string): GoogleGenAI {
+export function getGeminiClient(
+  requestId: string,
+  modelAttempted?: string
+): GoogleGenAI {
   const apiKey =
     process.env.GEMINI_API_KEY?.trim() ||
     process.env.GOOGLE_API_KEY?.trim();
@@ -113,17 +123,26 @@ export function getGeminiClient(requestId: string, modelAttempted?: string): Goo
   return new GoogleGenAI({ apiKey });
 }
 
-export function normalizeMediaMimeType(rawMime: string, fileName?: string): string {
+export function normalizeMediaMimeType(
+  rawMime: string,
+  fileName?: string
+): string {
   const cleaned = rawMime.trim().toLowerCase().split(';')[0];
   if (cleaned === 'image/jpg') return 'image/jpeg';
+  if (cleaned === 'video/x-m4v') return 'video/mp4';
   if (cleaned && cleaned !== 'application/octet-stream') return cleaned;
 
   const lowerName = (fileName ?? '').toLowerCase();
-  if (lowerName.endsWith('.jpg') || lowerName.endsWith('.jpeg')) return 'image/jpeg';
+  if (lowerName.endsWith('.jpg') || lowerName.endsWith('.jpeg')) {
+    return 'image/jpeg';
+  }
   if (lowerName.endsWith('.png')) return 'image/png';
   if (lowerName.endsWith('.webp')) return 'image/webp';
-  if (lowerName.endsWith('.mp4')) return 'video/mp4';
+  if (lowerName.endsWith('.mp4') || lowerName.endsWith('.m4v')) {
+    return 'video/mp4';
+  }
   if (lowerName.endsWith('.webm')) return 'video/webm';
+  if (lowerName.endsWith('.mov')) return 'video/quicktime';
   return cleaned;
 }
 
@@ -158,7 +177,7 @@ async function withTimeout<T>(
 }
 
 // ============================================================================
-// 1. GEMINI 4 HYDROGEN — MULTIMODAL SCENE OBSERVATION (/api/analyze)
+// 1. MULTIMODAL SCENE OBSERVATION (/api/analyze)
 // ============================================================================
 
 export const SceneKindSchema = z.enum([
@@ -185,7 +204,7 @@ export const FixtureObservationSchema = z.object({
 
 export type FixtureObservation = z.infer<typeof FixtureObservationSchema>;
 
-const HydrogenRawResponseSchema = z.object({
+const RawAnalyzeResponseSchema = z.object({
   observations: z.array(FixtureObservationSchema),
   roomCues: z.array(z.string()),
   warnings: z.array(z.string()),
@@ -202,16 +221,25 @@ export interface AnalyzeMediaInput {
   clientOverride?: Pick<GoogleGenAI, 'models' | 'files'>;
 }
 
+export interface AnalyzeUrlInput {
+  mediaUrl: string;
+  youtubeId?: string | null;
+  notes?: string;
+  requestId: string;
+  timeoutMs?: number;
+  clientOverride?: Pick<GoogleGenAI, 'models' | 'files'>;
+}
+
 export interface AnalyzeMediaResult {
   observations: FixtureObservation[];
   roomCues: string[];
   warnings: string[];
-  modelUsed: typeof ANALYZE_MODEL_ID;
+  modelUsed: string;
   requestId: string;
-  uploadMethod: 'inline' | 'files_api';
+  uploadMethod: 'inline' | 'files_api' | 'youtube_uri';
 }
 
-const HYDROGEN_RESPONSE_SCHEMA = {
+const OBSERVATION_RESPONSE_SCHEMA = {
   type: 'object',
   properties: {
     observations: {
@@ -223,7 +251,8 @@ const HYDROGEN_RESPONSE_SCHEMA = {
         properties: {
           id: {
             type: 'string',
-            description: 'Temporary observation identifier such as obs-1, obs-2.',
+            description:
+              'Temporary observation identifier such as obs-1, obs-2.',
           },
           kind: {
             type: 'string',
@@ -296,6 +325,105 @@ const HYDROGEN_RESPONSE_SCHEMA = {
 const UNCALIBRATED_WARNING =
   'Exact room and fixture measurements cannot be determined from uncalibrated camera media; user confirmation of physical dimensions is required.';
 
+function buildObservationPrompts(isVideo: boolean, notes?: string) {
+  const systemPrompt = [
+    `You are SpaceStage Scene Observer powered by ${ANALYZE_MODEL_ID}.`,
+    'Inspect the merchant-provided retail space media and identify ONLY visibly grounded furniture/fixtures.',
+    'STRICT RULES:',
+    '1. DO NOT invent or assert exact room or furniture measurements (no uncalibrated feet/meters/cm claims).',
+    '2. Map each visible fixture to one of: shelf, counter, table, rack, lamp, plant, art.',
+    isVideo
+      ? '3. Cite concrete video timestamp ranges (e.g. "00:02-00:06") in `evidence`.'
+      : '3. Cite concrete image regions (e.g. "back-left corner", "center foreground") in `evidence`.',
+    '4. Explicitly describe scale/occlusion/mounting ambiguities in `uncertainty` and `warnings`.',
+    '5. Never hallucinate hidden objects outside the frame.',
+  ].join('\n');
+
+  const userPrompt = notes?.trim()
+    ? `Analyze this retail space ${isVideo ? 'video' : 'photo'} and extract visible owned fixtures. Merchant context (unverified): ${notes.trim()}`
+    : `Analyze this retail space ${isVideo ? 'video' : 'photo'} and extract visible owned fixtures, room cues, and uncertainty warnings.`;
+
+  return { systemPrompt, userPrompt };
+}
+
+function finalizeObservationOutput(
+  rawText: string | undefined,
+  isVideo: boolean,
+  requestId: string,
+  uploadMethod: AnalyzeMediaResult['uploadMethod']
+): AnalyzeMediaResult {
+  const trimmed = rawText?.trim();
+  if (!trimmed) {
+    throw new GeminiServiceError({
+      code: 'INVALID_MODEL_JSON',
+      message: `${ANALYZE_MODEL_ID} returned an empty response.`,
+      status: 502,
+      requestId,
+      modelAttempted: ANALYZE_MODEL_ID,
+    });
+  }
+
+  let parsedJson: unknown;
+  try {
+    parsedJson = JSON.parse(trimmed);
+  } catch {
+    throw new GeminiServiceError({
+      code: 'INVALID_MODEL_JSON',
+      message: `${ANALYZE_MODEL_ID} returned malformed JSON.`,
+      status: 502,
+      requestId,
+      modelAttempted: ANALYZE_MODEL_ID,
+    });
+  }
+
+  const validated = RawAnalyzeResponseSchema.safeParse(parsedJson);
+  if (!validated.success) {
+    throw new GeminiServiceError({
+      code: 'INVALID_MODEL_JSON',
+      message: `${ANALYZE_MODEL_ID} output failed schema validation: ${validated.error.issues[0]?.message ?? 'invalid structure'}`,
+      status: 502,
+      requestId,
+      modelAttempted: ANALYZE_MODEL_ID,
+    });
+  }
+
+  const warnings = [...validated.data.warnings];
+  const hasCalibrationWarning = warnings.some((w) =>
+    /uncalibrated|exact.*(measurement|dimension)|confirm.*(measurement|dimension)/i.test(
+      w
+    )
+  );
+  if (!hasCalibrationWarning) {
+    warnings.unshift(UNCALIBRATED_WARNING);
+  }
+  if (!isVideo) {
+    const hasSinglePhotoNote = warnings.some((w) =>
+      /single photo|still image|single view/i.test(w)
+    );
+    if (!hasSinglePhotoNote) {
+      warnings.push(
+        'Single-photo fallback used instead of multi-angle video; blind spots outside the camera frame cannot be inspected.'
+      );
+    }
+  }
+
+  const normalizedObservations = validated.data.observations.map(
+    (obs, index) => ({
+      ...obs,
+      id: obs.id.trim() || `obs-${index + 1}`,
+    })
+  );
+
+  return {
+    observations: normalizedObservations,
+    roomCues: validated.data.roomCues,
+    warnings,
+    modelUsed: ANALYZE_MODEL_ID,
+    requestId,
+    uploadMethod,
+  };
+}
+
 export async function analyzeSpaceMedia(
   input: AnalyzeMediaInput
 ): Promise<AnalyzeMediaResult> {
@@ -304,7 +432,7 @@ export async function analyzeSpaceMedia(
     fileName,
     notes,
     requestId,
-    timeoutMs = 55_000,
+    timeoutMs = 60_000,
     forceFilesApi = false,
   } = input;
 
@@ -332,7 +460,7 @@ export async function analyzeSpaceMedia(
   if (!ALLOWED_MEDIA_MIMES.has(mimeType)) {
     throw new GeminiServiceError({
       code: 'INVALID_MIME',
-      message: `Unsupported media MIME type "${input.mimeType || 'unknown'}". Upload JPG, PNG, WebP, MP4, or WebM.`,
+      message: `Unsupported media MIME type "${input.mimeType || 'unknown'}". Upload JPG, PNG, WebP, MP4, MOV, or WebM.`,
       status: 415,
       requestId,
       modelAttempted: ANALYZE_MODEL_ID,
@@ -341,7 +469,8 @@ export async function analyzeSpaceMedia(
 
   const ai =
     input.clientOverride ?? getGeminiClient(requestId, ANALYZE_MODEL_ID);
-  const useFilesApi = forceFilesApi || buffer.byteLength > INLINE_MEDIA_MAX_BYTES;
+  const useFilesApi =
+    forceFilesApi || buffer.byteLength > INLINE_MEDIA_MAX_BYTES;
   const uploadMethod: 'inline' | 'files_api' = useFilesApi
     ? 'files_api'
     : 'inline';
@@ -384,7 +513,6 @@ export async function analyzeSpaceMedia(
 
       uploadedFileName = uploaded.name;
 
-      // Poll until video/media file reaches ACTIVE state
       const pollDeadline = Date.now() + timeoutMs;
       while (
         uploaded.state &&
@@ -431,22 +559,7 @@ export async function analyzeSpaceMedia(
     }
 
     const isVideo = mimeType.startsWith('video/');
-    const systemPrompt = [
-      'You are SpaceStage Scene Observer powered by Gemini 4 Neon.',
-      'Inspect the merchant-uploaded retail space media and identify ONLY visibly grounded furniture/fixtures.',
-      'STRICT RULES:',
-      '1. DO NOT invent or assert exact room or furniture measurements (no uncalibrated feet/meters/cm claims).',
-      '2. Map each visible fixture to one of: shelf, counter, table, rack, lamp, plant, art.',
-      isVideo
-        ? '3. Cite concrete video timestamp ranges (e.g. "00:02-00:06") in `evidence`.'
-        : '3. Cite concrete image regions (e.g. "back-left corner", "center foreground") in `evidence`.',
-      '4. Explicitly describe scale/occlusion/mounting ambiguities in `uncertainty` and `warnings`.',
-      '5. Never hallucinate hidden objects outside the frame.',
-    ].join('\n');
-
-    const userPrompt = notes?.trim()
-      ? `Analyze this retail space ${isVideo ? 'video clip' : 'photo'} and extract visible owned fixtures. Merchant notes (unverified context): ${notes.trim()}`
-      : `Analyze this retail space ${isVideo ? 'video clip' : 'photo'} and extract visible owned fixtures, room cues, and uncertainty warnings.`;
+    const { systemPrompt, userPrompt } = buildObservationPrompts(isVideo, notes);
 
     const response = await withTimeout(
       ai.models.generateContent({
@@ -460,7 +573,7 @@ export async function analyzeSpaceMedia(
         config: {
           systemInstruction: systemPrompt,
           responseMimeType: 'application/json',
-          responseSchema: HYDROGEN_RESPONSE_SCHEMA,
+          responseSchema: OBSERVATION_RESPONSE_SCHEMA,
           thinkingConfig: {
             thinkingLevel: ThinkingLevel.LOW,
           },
@@ -470,69 +583,14 @@ export async function analyzeSpaceMedia(
       timeoutMs,
       requestId,
       ANALYZE_MODEL_ID,
-      'Gemini 4 Neon observation'
+      `${ANALYZE_MODEL_ID} observation`
     );
 
-    const rawText = response.text?.trim();
-    if (!rawText) {
-      throw new GeminiServiceError({
-        code: 'INVALID_MODEL_JSON',
-        message: 'Gemini 4 Neon returned an empty response.',
-        status: 502,
-        requestId,
-        modelAttempted: ANALYZE_MODEL_ID,
-      });
-    }
-
-    let parsedJson: unknown;
-    try {
-      parsedJson = JSON.parse(rawText);
-    } catch {
-      throw new GeminiServiceError({
-        code: 'INVALID_MODEL_JSON',
-        message: 'Gemini 4 Neon returned malformed JSON.',
-        status: 502,
-        requestId,
-        modelAttempted: ANALYZE_MODEL_ID,
-      });
-    }
-
-    const validated = HydrogenRawResponseSchema.safeParse(parsedJson);
-    if (!validated.success) {
-      throw new GeminiServiceError({
-        code: 'INVALID_MODEL_JSON',
-        message: `Gemini 4 Neon output failed schema validation: ${validated.error.issues[0]?.message ?? 'invalid structure'}`,
-        status: 502,
-        requestId,
-        modelAttempted: ANALYZE_MODEL_ID,
-      });
-    }
-
-    const warnings = [...validated.data.warnings];
-    const hasCalibrationWarning = warnings.some((w) =>
-      /uncalibrated|exact.*(measurement|dimension)|confirm.*(measurement|dimension)/i.test(
-        w
-      )
-    );
-    if (!hasCalibrationWarning) {
-      warnings.unshift(UNCALIBRATED_WARNING);
-    }
-    if (!isVideo) {
-      const hasSinglePhotoNote = warnings.some((w) =>
-        /single photo|still image|single view/i.test(w)
-      );
-      if (!hasSinglePhotoNote) {
-        warnings.push(
-          'Single-photo fallback used instead of multi-angle video; blind spots outside the camera frame cannot be inspected.'
-        );
-      }
-    }
-
-    const normalizedObservations = validated.data.observations.map(
-      (obs, index) => ({
-        ...obs,
-        id: obs.id.trim() || `obs-${index + 1}`,
-      })
+    const finalized = finalizeObservationOutput(
+      response.text,
+      isVideo,
+      requestId,
+      uploadMethod
     );
 
     logGeminiEvent({
@@ -543,19 +601,12 @@ export async function analyzeSpaceMedia(
       durationMs: Date.now() - startMs,
       meta: {
         uploadMethod,
-        observationCount: normalizedObservations.length,
-        warningCount: warnings.length,
+        observationCount: finalized.observations.length,
+        warningCount: finalized.warnings.length,
       },
     });
 
-    return {
-      observations: normalizedObservations,
-      roomCues: validated.data.roomCues,
-      warnings,
-      modelUsed: ANALYZE_MODEL_ID,
-      requestId,
-      uploadMethod,
-    };
+    return finalized;
   } catch (err) {
     logGeminiEvent({
       requestId,
@@ -572,8 +623,8 @@ export async function analyzeSpaceMedia(
       code: 'MODEL_ERROR',
       message:
         err instanceof Error
-          ? `Gemini 4 Neon request failed: ${err.message}`
-          : 'Gemini 4 Neon request failed.',
+          ? `${ANALYZE_MODEL_ID} request failed: ${err.message}`
+          : `${ANALYZE_MODEL_ID} request failed.`,
       status: 502,
       requestId,
       modelAttempted: ANALYZE_MODEL_ID,
@@ -585,34 +636,248 @@ export async function analyzeSpaceMedia(
   }
 }
 
+function extractYouTubeWatchUrl(
+  rawUrl: string,
+  explicitYoutubeId?: string | null
+): string | null {
+  if (explicitYoutubeId && /^[a-zA-Z0-9_-]{11}$/.test(explicitYoutubeId)) {
+    return `https://www.youtube.com/watch?v=${explicitYoutubeId}`;
+  }
+  try {
+    const parsed = new URL(
+      rawUrl.startsWith('http://') || rawUrl.startsWith('https://')
+        ? rawUrl
+        : `https://${rawUrl}`
+    );
+    const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
+    if (host === 'youtu.be') {
+      const id = parsed.pathname.split('/').filter(Boolean)[0];
+      return id && /^[a-zA-Z0-9_-]{11}$/.test(id)
+        ? `https://www.youtube.com/watch?v=${id}`
+        : null;
+    }
+    if (host === 'youtube.com' || host === 'm.youtube.com') {
+      const v = parsed.searchParams.get('v');
+      if (v && /^[a-zA-Z0-9_-]{11}$/.test(v)) {
+        return `https://www.youtube.com/watch?v=${v}`;
+      }
+      const segments = parsed.pathname.split('/').filter(Boolean);
+      if (
+        (segments[0] === 'shorts' ||
+          segments[0] === 'embed' ||
+          segments[0] === 'live') &&
+        segments[1] &&
+        /^[a-zA-Z0-9_-]{11}$/.test(segments[1])
+      ) {
+        return `https://www.youtube.com/watch?v=${segments[1]}`;
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function isSafePublicHttpsUrl(rawUrl: string): URL | null {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== 'https:') return null;
+    const host = parsed.hostname.toLowerCase();
+    if (
+      host === 'localhost' ||
+      host.endsWith('.local') ||
+      host === '127.0.0.1' ||
+      host === '0.0.0.0' ||
+      host === '::1' ||
+      /^10\./.test(host) ||
+      /^192\.168\./.test(host) ||
+      /^169\.254\./.test(host) ||
+      /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)
+    ) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Supports `MediaIntakeModal`'s JSON YouTube / direct HTTPS video URL intake mode.
+ */
+export async function analyzeSpaceUrl(
+  input: AnalyzeUrlInput
+): Promise<AnalyzeMediaResult> {
+  const { mediaUrl, youtubeId, notes, requestId, timeoutMs = 65_000 } = input;
+  const trimmedUrl = mediaUrl.trim();
+  if (!trimmedUrl && !youtubeId) {
+    throw new GeminiServiceError({
+      code: 'INVALID_INPUT',
+      message: 'Provide a valid YouTube or HTTPS video URL to analyze.',
+      status: 400,
+      requestId,
+      modelAttempted: ANALYZE_MODEL_ID,
+    });
+  }
+
+  const youtubeWatchUrl = extractYouTubeWatchUrl(trimmedUrl, youtubeId);
+  if (youtubeWatchUrl) {
+    const ai =
+      input.clientOverride ?? getGeminiClient(requestId, ANALYZE_MODEL_ID);
+    const startMs = Date.now();
+    logGeminiEvent({
+      requestId,
+      route: '/api/analyze',
+      modelId: ANALYZE_MODEL_ID,
+      stage: 'start_youtube_uri',
+      meta: { uploadMethod: 'youtube_uri' },
+    });
+
+    try {
+      const { systemPrompt, userPrompt } = buildObservationPrompts(true, notes);
+      const response = await withTimeout(
+        ai.models.generateContent({
+          model: ANALYZE_MODEL_ID,
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                createPartFromUri(youtubeWatchUrl, 'video/mp4'),
+                { text: userPrompt },
+              ],
+            },
+          ],
+          config: {
+            systemInstruction: systemPrompt,
+            responseMimeType: 'application/json',
+            responseSchema: OBSERVATION_RESPONSE_SCHEMA,
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            temperature: 0.1,
+          },
+        }),
+        timeoutMs,
+        requestId,
+        ANALYZE_MODEL_ID,
+        `${ANALYZE_MODEL_ID} YouTube observation`
+      );
+
+      const finalized = finalizeObservationOutput(
+        response.text,
+        true,
+        requestId,
+        'youtube_uri'
+      );
+
+      logGeminiEvent({
+        requestId,
+        route: '/api/analyze',
+        modelId: ANALYZE_MODEL_ID,
+        stage: 'complete',
+        durationMs: Date.now() - startMs,
+        meta: {
+          uploadMethod: 'youtube_uri',
+          observationCount: finalized.observations.length,
+        },
+      });
+      return finalized;
+    } catch (err) {
+      if (err instanceof GeminiServiceError) throw err;
+      throw new GeminiServiceError({
+        code: 'MODEL_ERROR',
+        message:
+          err instanceof Error
+            ? `Failed to analyze YouTube video: ${err.message}`
+            : 'Failed to analyze YouTube video.',
+        status: 502,
+        requestId,
+        modelAttempted: ANALYZE_MODEL_ID,
+      });
+    }
+  }
+
+  const safeUrl = isSafePublicHttpsUrl(trimmedUrl);
+  if (!safeUrl) {
+    throw new GeminiServiceError({
+      code: 'INVALID_INPUT',
+      message:
+        'Only public YouTube links or public HTTPS media URLs are supported.',
+      status: 400,
+      requestId,
+      modelAttempted: ANALYZE_MODEL_ID,
+    });
+  }
+
+  let fetchedRes: Response;
+  try {
+    fetchedRes = await withTimeout(
+      fetch(safeUrl.toString()),
+      20_000,
+      requestId,
+      ANALYZE_MODEL_ID,
+      'Remote media URL download'
+    );
+  } catch (err) {
+    if (err instanceof GeminiServiceError) throw err;
+    throw new GeminiServiceError({
+      code: 'FILE_UPLOAD_FAILED',
+      message: 'Could not download remote media URL.',
+      status: 400,
+      requestId,
+      modelAttempted: ANALYZE_MODEL_ID,
+    });
+  }
+
+  if (!fetchedRes.ok) {
+    throw new GeminiServiceError({
+      code: 'FILE_UPLOAD_FAILED',
+      message: `Remote media URL returned HTTP ${fetchedRes.status}.`,
+      status: 400,
+      requestId,
+      modelAttempted: ANALYZE_MODEL_ID,
+    });
+  }
+
+  const arrayBuf = await fetchedRes.arrayBuffer();
+  const contentType = fetchedRes.headers.get('content-type') ?? '';
+  return analyzeSpaceMedia({
+    buffer: Buffer.from(arrayBuf),
+    mimeType: contentType,
+    fileName: safeUrl.pathname,
+    notes,
+    requestId,
+    timeoutMs,
+    clientOverride: input.clientOverride,
+  });
+}
+
 // ============================================================================
-// 2. GEMINI 4 NEON — SPATIAL PLANNER + SINGLE DETERMINISTIC REPAIR (/api/plan)
+// 2. SPATIAL LAYOUT PLANNER + SINGLE DETERMINISTIC REPAIR (/api/plan)
 // ============================================================================
 
-export const ProductRefSchema = z.object({
-  title: z.string().min(1),
-  seller: z.string().min(1),
-  sellerDomain: z.string().min(1),
-  productId: z.string().min(1),
-  variantId: z.string().min(1),
-  priceCents: z.number().int().nonnegative(),
-  currency: z.string().min(1),
-  productUrl: z.string().min(1),
-  imageUrl: z.string().optional(),
-  available: z.boolean().optional(),
-});
-
-export const OwnedFixtureInputSchema = z.object({
-  id: z.string().min(1),
-  kind: SceneKindSchema,
-  label: z.string().min(1),
-  size: z.tuple([z.number().positive(), z.number().positive(), z.number().positive()]).optional(),
-  position: z.tuple([z.number(), z.number(), z.number()]).optional(),
-  rotationY: z.number().optional(),
-  dimensionsVerified: z.boolean().optional(),
-  locked: z.boolean().optional(),
-  keep: z.boolean().optional(),
-});
+export const OwnedFixtureInputSchema = z
+  .object({
+    id: z.string().min(1),
+    kind: SceneKindSchema,
+    label: z.string().min(1),
+    size: z
+      .tuple([
+        z.number().positive(),
+        z.number().positive(),
+        z.number().positive(),
+      ])
+      .optional(),
+    widthMeters: z.number().positive().optional(),
+    heightMeters: z.number().positive().optional(),
+    depthMeters: z.number().positive().optional(),
+    position: z.tuple([z.number(), z.number(), z.number()]).optional(),
+    rotationY: z.number().optional(),
+    dimensionsVerified: z.boolean().optional(),
+    locked: z.boolean().optional(),
+    owned: z.boolean().optional(),
+    exclude: z.boolean().optional(),
+    keep: z.boolean().optional(),
+  })
+  .passthrough();
 
 export type OwnedFixtureInput = z.infer<typeof OwnedFixtureInputSchema>;
 
@@ -625,6 +890,14 @@ export const ProductCandidateInputSchema = ProductRefSchema.extend({
 });
 
 export type ProductCandidateInput = z.infer<typeof ProductCandidateInputSchema>;
+
+const AnalysisContextSchema = z
+  .object({
+    observations: z.array(FixtureObservationSchema).optional(),
+    roomCues: z.array(z.string()).optional(),
+    warnings: z.array(z.string()).optional(),
+  })
+  .passthrough();
 
 export const PlanRequestSchema = z.object({
   room: z.object({
@@ -643,6 +916,8 @@ export const PlanRequestSchema = z.object({
   budgetCents: z.number().int().nonnegative(),
   minWalkwayWidth: z.number().positive().default(DEFAULT_MIN_WALKWAY_METERS),
   noDrilling: z.boolean().default(true),
+  analysis: AnalysisContextSchema.nullable().optional(),
+  currentScene: ShopSceneSchema.optional(),
   existingObjects: z.array(OwnedFixtureInputSchema).optional(),
   items: z.array(OwnedFixtureInputSchema).optional(),
   ownedObjects: z.array(OwnedFixtureInputSchema).optional(),
@@ -652,7 +927,7 @@ export const PlanRequestSchema = z.object({
 
 export type PlanRequestInput = z.infer<typeof PlanRequestSchema>;
 
-const NeonPlannedObjectSchema = z.object({
+const PlannedObjectSchema = z.object({
   id: z.string().min(1),
   kind: SceneKindSchema,
   label: z.string().min(1),
@@ -669,12 +944,12 @@ const NeonPlannedObjectSchema = z.object({
   selectedVariantId: z.string().nullable().optional(),
 });
 
-const NeonRawPlanSchema = z.object({
-  objects: z.array(NeonPlannedObjectSchema),
+const RawPlanSchema = z.object({
+  objects: z.array(PlannedObjectSchema),
   warnings: z.array(z.string()),
 });
 
-const NEON_RESPONSE_SCHEMA = {
+const PLANNER_RESPONSE_SCHEMA = {
   type: 'object',
   properties: {
     objects: {
@@ -707,12 +982,12 @@ const NEON_RESPONSE_SCHEMA = {
             items: { type: 'number' },
             minItems: 3,
             maxItems: 3,
-            description: '[widthX, heightY, depthZ] in meters.',
+            description: '[widthX, heightY, depthZ] in meters at rotationY = 0.',
           },
           rotationY: {
             type: 'number',
             description:
-              'Rotation around vertical Y axis in radians (e.g. 0, 1.5708, 3.1416, -1.5708).',
+              'Counter-clockwise rotation around vertical Y axis in radians (e.g. 0, 1.5708, 3.1416, -1.5708).',
           },
           dimensionsVerified: {
             type: 'boolean',
@@ -758,11 +1033,11 @@ const DEFAULT_APPROX_SIZES: Record<SceneObject['kind'], Vec3> = {
   rack: [1.1, 1.55, 0.5],
   lamp: [0.35, 1.55, 0.35],
   plant: [0.4, 0.9, 0.4],
-  art: [0.7, 0.9, 0.08],
+  art: [0.8, 1.35, 0.12],
 };
 
 function toCleanProductRef(candidate: ProductCandidateInput): ProductRef {
-  return {
+  return ProductRefSchema.parse({
     title: candidate.title,
     seller: candidate.seller,
     sellerDomain: candidate.sellerDomain,
@@ -775,18 +1050,11 @@ function toCleanProductRef(candidate: ProductCandidateInput): ProductRef {
     ...(typeof candidate.available === 'boolean'
       ? { available: candidate.available }
       : {}),
-  };
+  });
 }
 
-/**
- * Enforces strict data integrity on Neon's output:
- * - Owned items keep `source: 'owned'`, never carry a `product`, keep locked pose/verified size if provided.
- * - New items ONLY get `source: 'shopify'` + `product` if `selectedVariantId` matches a real candidate passed in `products`;
- *   otherwise they become `source: 'proposal'` with `product: undefined` (zero invented IDs or prices).
- * - Missing dimensions are never silently marked verified (`dimensionsVerified: false`).
- */
 function sanitizePlannedScene(params: {
-  rawPlan: z.infer<typeof NeonRawPlanSchema>;
+  rawPlan: z.infer<typeof RawPlanSchema>;
   room: ShopScene['room'];
   purpose: string;
   style: string;
@@ -851,7 +1119,8 @@ function sanitizePlannedScene(params: {
         });
         continue;
       }
-      // Prevent model from inventing unconfirmed "owned" objects that user never listed
+
+      // Unconfirmed item marked owned by model becomes a generic proposal so owned inventory stays truthful
       seenIds.add(uniqueId);
       sanitizedObjects.push({
         id: uniqueId,
@@ -866,7 +1135,6 @@ function sanitizePlannedScene(params: {
       continue;
     }
 
-    // Check if mapped to a real Shopify candidate from whitelist
     const matchedCandidate = item.selectedVariantId
       ? candidateByVariant.get(item.selectedVariantId)
       : undefined;
@@ -902,7 +1170,6 @@ function sanitizePlannedScene(params: {
     }
   }
 
-  // Ensure confirmed owned fixtures marked to keep were not dropped by the planner
   const extraWarnings = [...rawPlan.warnings];
   for (const owned of ownedFixtures) {
     if (seenIds.has(owned.id)) continue;
@@ -931,7 +1198,7 @@ function sanitizePlannedScene(params: {
 
   if (sanitizedObjects.some((o) => !o.dimensionsVerified)) {
     const hasDimNote = extraWarnings.some((w) =>
-      /unverified|approximate.*dimension/i.test(w)
+      /unverified|approximate.*dimension|estimated.*dimension/i.test(w)
     );
     if (!hasDimNote) {
       extraWarnings.push(
@@ -940,7 +1207,7 @@ function sanitizePlannedScene(params: {
     }
   }
 
-  return {
+  return ShopSceneSchema.parse({
     room,
     purpose,
     style,
@@ -949,10 +1216,10 @@ function sanitizePlannedScene(params: {
     noDrilling,
     objects: sanitizedObjects,
     warnings: extraWarnings,
-  };
+  });
 }
 
-function buildNeonSystemInstruction(params: {
+function buildPlannerSystemInstruction(params: {
   room: ShopScene['room'];
   minWalkwayWidth: number;
   noDrilling: boolean;
@@ -963,25 +1230,23 @@ function buildNeonSystemInstruction(params: {
   const halfD = (room.depth / 2).toFixed(3);
 
   return [
-    'You are SpaceStage Spatial Store Planner powered by Gemini 4 Hydrogen.',
+    `You are SpaceStage Spatial Store Planner powered by ${PLAN_MODEL_ID}.`,
     'Generate a realistic, functional, visually balanced 3D retail floorplan in strict JSON.',
     '',
     'COORDINATE & GEOMETRY RULES (MANDATORY):',
-    `- All lengths and coordinates are in METERS. Room width (X) = ${room.width.toFixed(4)}m, depth (Z) = ${room.depth.toFixed(4)}m, ceiling height (Y) = ${room.height.toFixed(4)}m.`,
+    `- All lengths and coordinates are in METERS (1 ft = ${FT_TO_METERS} m). Room width (X) = ${room.width.toFixed(4)}m, depth (Z) = ${room.depth.toFixed(4)}m, ceiling height (Y) = ${room.height.toFixed(4)}m.`,
     `- Floor is centered at [0, 0]: X spans [-${halfW}, +${halfW}] (west = -${halfW}, east = +${halfW}); Z spans [-${halfD}, +${halfD}] (north = -${halfD}, south = +${halfD}).`,
-    '- Place floor-standing fixtures with `position[1] = 0` (resting on the floor).',
+    '- Place floor-standing fixtures with `position[1] = 0` (bottom resting on the floor).',
     '- Every rotated object footprint (`position` +/- rotated `size[0]/2`, `size[2]/2`) MUST stay strictly inside the room walls (`[-width/2, +width/2]` and `[-depth/2, +depth/2]`) with zero overlap between fixtures.',
     `- Entrance is on the ${room.entrance.wall.toUpperCase()} wall (offset ${room.entrance.offset.toFixed(3)}m from wall center, doorway width ${room.entrance.width.toFixed(3)}m).`,
     `- Keep at least ${minWalkwayWidth.toFixed(4)}m (3 ft) unobstructed vestibule inside the entrance AND maintain a continuous ${minWalkwayWidth.toFixed(4)}m wide walkway from the entrance reaching every counter, shelf, table, and rack.`,
     noDrilling
-      ? '- `noDrilling` is TRUE: ONLY place freestanding floor or tabletop fixtures. DO NOT use wall-mounted shelves, hanging racks, ceiling pendants, sconces, or wall-drilled art (`position[1]` must be 0 on floor).'
+      ? '- `noDrilling` is TRUE: ONLY place freestanding floor fixtures (`position[1] = 0`, floor-leaning if art). DO NOT use wall-mounted shelves, hanging racks, ceiling pendants, sconces, or elevated wall art.'
       : '- `noDrilling` is false: wall-mounted items are permitted if within room bounds.',
     '',
     'INVENTORY & SHOPIFY COMMERCE RULES (MANDATORY):',
     '- Preserve all confirmed `owned` fixtures (`source: "owned"`, exact `id`, $0 cost toward new-purchase budget). Do not move `locked: true` owned fixtures.',
-    `- Total price of new ` +
-      '`shopify` fixtures MUST NOT exceed ' +
-      `$${(budgetCents / 100).toFixed(2)} (${budgetCents} cents).`,
+    `- Total price of new \`shopify\` fixtures MUST NOT exceed $${(budgetCents / 100).toFixed(2)} (${budgetCents} cents).`,
     '- NEVER invent Shopify product IDs, variant IDs, or prices. When selecting a provided Shopify candidate, set `source: "shopify"` and `selectedVariantId` to its exact `variantId`. If no provided candidate fits, set `source: "proposal"` and `selectedVariantId: null`.',
     '- Set `dimensionsVerified: true` ONLY if the input explicitly marked that item’s dimensions as verified; otherwise set `dimensionsVerified: false`.',
   ].join('\n');
@@ -997,7 +1262,7 @@ export interface PlanGenerationResult {
   scene: ShopScene;
   issues: ConstraintIssue[];
   valid: boolean;
-  modelUsed: typeof PLAN_MODEL_ID;
+  modelUsed: string;
   repairCount: number;
   requestId: string;
 }
@@ -1009,7 +1274,7 @@ async function callPlannerOnce(params: {
   requestId: string;
   timeoutMs: number;
   stageLabel: string;
-}): Promise<z.infer<typeof NeonRawPlanSchema>> {
+}): Promise<z.infer<typeof RawPlanSchema>> {
   const { ai, systemInstruction, userPrompt, requestId, timeoutMs, stageLabel } =
     params;
 
@@ -1020,7 +1285,7 @@ async function callPlannerOnce(params: {
       config: {
         systemInstruction,
         responseMimeType: 'application/json',
-        responseSchema: NEON_RESPONSE_SCHEMA,
+        responseSchema: PLANNER_RESPONSE_SCHEMA,
         thinkingConfig: {
           thinkingLevel: ThinkingLevel.LOW,
         },
@@ -1057,7 +1322,7 @@ async function callPlannerOnce(params: {
     });
   }
 
-  const checked = NeonRawPlanSchema.safeParse(parsed);
+  const checked = RawPlanSchema.safeParse(parsed);
   if (!checked.success) {
     throw new GeminiServiceError({
       code: 'INVALID_MODEL_JSON',
@@ -1071,6 +1336,88 @@ async function callPlannerOnce(params: {
   return checked.data;
 }
 
+function normalizeOwnedItemSize(item: OwnedFixtureInput): Vec3 | undefined {
+  if (item.size) return item.size;
+  if (
+    item.widthMeters !== undefined ||
+    item.heightMeters !== undefined ||
+    item.depthMeters !== undefined
+  ) {
+    const defaults = DEFAULT_APPROX_SIZES[item.kind];
+    return [
+      item.widthMeters ?? defaults[0],
+      item.heightMeters ?? defaults[1],
+      item.depthMeters ?? defaults[2],
+    ];
+  }
+  return undefined;
+}
+
+function resolveOwnedAndCandidates(rawInput: PlanRequestInput): {
+  ownedFixtures: OwnedFixtureInput[];
+  productCandidates: ProductCandidateInput[];
+} {
+  const explicitOwned =
+    rawInput.existingObjects ?? rawInput.ownedObjects ?? rawInput.items;
+
+  let ownedFixtures: OwnedFixtureInput[] = [];
+  if (explicitOwned) {
+    ownedFixtures = explicitOwned
+      .filter(
+        (item) =>
+          item.keep !== false &&
+          item.exclude !== true &&
+          item.owned !== false
+      )
+      .map((item) => {
+        const resolvedSize = normalizeOwnedItemSize(item);
+        return resolvedSize ? { ...item, size: resolvedSize } : item;
+      });
+  } else if (rawInput.currentScene) {
+    ownedFixtures = rawInput.currentScene.objects
+      .filter((obj) => obj.source === 'owned')
+      .map((obj) => ({
+        id: obj.id,
+        kind: obj.kind,
+        label: obj.label,
+        size: obj.size,
+        position: obj.position,
+        rotationY: obj.rotationY,
+        dimensionsVerified: obj.dimensionsVerified,
+        locked: obj.locked,
+      }));
+  }
+
+  const candidateMap = new Map<string, ProductCandidateInput>();
+  for (const p of rawInput.products ?? rawInput.productCandidates ?? []) {
+    if (p.available !== false) {
+      candidateMap.set(p.variantId, p);
+    }
+  }
+  if (rawInput.currentScene) {
+    for (const obj of rawInput.currentScene.objects) {
+      if (
+        obj.source === 'shopify' &&
+        obj.product &&
+        obj.product.available !== false &&
+        !candidateMap.has(obj.product.variantId)
+      ) {
+        candidateMap.set(obj.product.variantId, {
+          ...obj.product,
+          kind: obj.kind,
+          size: obj.size,
+          dimensionsVerified: obj.dimensionsVerified,
+        });
+      }
+    }
+  }
+
+  return {
+    ownedFixtures,
+    productCandidates: Array.from(candidateMap.values()),
+  };
+}
+
 export async function generateShopPlan(
   rawInput: PlanRequestInput,
   options: PlanGenerationOptions
@@ -1082,23 +1429,18 @@ export async function generateShopPlan(
   const purpose =
     rawInput.purpose?.trim() ||
     rawInput.brief?.trim() ||
+    rawInput.currentScene?.purpose?.trim() ||
     'Boutique retail display';
   const style =
     rawInput.style?.trim() ||
     rawInput.brief?.trim() ||
+    rawInput.currentScene?.style?.trim() ||
     'Modern, minimal, warm retail aesthetic';
 
-  const allOwnedInputs =
-    rawInput.existingObjects ?? rawInput.ownedObjects ?? rawInput.items ?? [];
-  const ownedFixtures = allOwnedInputs.filter((item) => item.keep !== false);
+  const { ownedFixtures, productCandidates } =
+    resolveOwnedAndCandidates(rawInput);
 
-  const productCandidates = (
-    rawInput.products ??
-    rawInput.productCandidates ??
-    []
-  ).filter((p) => p.available !== false);
-
-  const systemInstruction = buildNeonSystemInstruction({
+  const systemInstruction = buildPlannerSystemInstruction({
     room: rawInput.room,
     minWalkwayWidth: rawInput.minWalkwayWidth,
     noDrilling: rawInput.noDrilling,
@@ -1114,6 +1456,14 @@ export async function generateShopPlan(
       budgetCents: rawInput.budgetCents,
       minWalkwayWidth: rawInput.minWalkwayWidth,
       noDrilling: rawInput.noDrilling,
+      ...(rawInput.analysis
+        ? {
+            mediaAnalysisContext: {
+              observations: rawInput.analysis.observations ?? [],
+              roomCues: rawInput.analysis.roomCues ?? [],
+            },
+          }
+        : {}),
       confirmedOwnedFixtures: ownedFixtures.map((o) => ({
         id: o.id,
         kind: o.kind,
@@ -1162,7 +1512,7 @@ export async function generateShopPlan(
       userPrompt: initialPrompt,
       requestId,
       timeoutMs,
-      stageLabel: 'Gemini 4 Hydrogen initial layout',
+      stageLabel: `${PLAN_MODEL_ID} initial layout`,
     });
 
     let currentScene = sanitizePlannedScene({
@@ -1177,7 +1527,7 @@ export async function generateShopPlan(
       productCandidates,
     });
 
-    let validation = validateScene(currentScene);
+    let validation = evaluateScene(currentScene);
     let repairCount = 0;
 
     logGeminiEvent({
@@ -1193,7 +1543,6 @@ export async function generateShopPlan(
       },
     });
 
-    // At most ONE corrective repair pass when hard geometric/budget/drilling errors exist
     if (!validation.valid) {
       repairCount = 1;
       const errorIssues = validation.issues.filter(
@@ -1241,7 +1590,7 @@ export async function generateShopPlan(
         userPrompt: repairPrompt,
         requestId,
         timeoutMs,
-        stageLabel: 'Gemini 4 Hydrogen layout repair',
+        stageLabel: `${PLAN_MODEL_ID} layout repair`,
       });
 
       currentScene = sanitizePlannedScene({
@@ -1256,7 +1605,7 @@ export async function generateShopPlan(
         productCandidates,
       });
 
-      validation = validateScene(currentScene);
+      validation = evaluateScene(currentScene);
 
       logGeminiEvent({
         requestId,
@@ -1296,8 +1645,8 @@ export async function generateShopPlan(
       code: 'MODEL_ERROR',
       message:
         err instanceof Error
-          ? `Gemini 4 Hydrogen planning failed: ${err.message}`
-          : 'Gemini 4 Hydrogen planning failed.',
+          ? `${PLAN_MODEL_ID} planning failed: ${err.message}`
+          : `${PLAN_MODEL_ID} planning failed.`,
       status: 502,
       requestId,
       modelAttempted: PLAN_MODEL_ID,

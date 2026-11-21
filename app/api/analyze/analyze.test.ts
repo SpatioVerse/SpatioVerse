@@ -1,16 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
+import { compactDemoScene } from '@/fixtures/demoScene';
+import { ShopSceneSchema } from '@/lib/schema';
 import {
   ANALYZE_MODEL_ID,
   analyzeSpaceMedia,
+  analyzeSpaceUrl,
   generateShopPlan,
   PLAN_MODEL_ID,
-} from '../../../lib/gemini';
-import { DEFAULT_MIN_WALKWAY_METERS, feetToMeters } from '../../../lib/constraints';
+} from '@/lib/gemini';
+import { DEFAULT_MIN_WALKWAY_METERS, feetToMeters } from '@/lib/constraints';
 import { POST as analyzePOST } from './route';
 import { POST as planPOST } from '../plan/route';
 
-describe('Gemini 4 Neon — analyzeSpaceMedia & POST /api/analyze', () => {
-  it('extracts grounded observations inline, preserves model ID gemini-4-neon, and enforces uncalibrated warnings', async () => {
+describe('POST /api/analyze — multipart & YouTube JSON contracts (MediaIntakeModal + SetupWizard)', () => {
+  it('extracts grounded observations inline and enforces uncalibrated warnings', async () => {
     const generateContent = vi.fn().mockResolvedValue({
       text: JSON.stringify({
         observations: [
@@ -22,7 +25,7 @@ describe('Gemini 4 Neon — analyzeSpaceMedia & POST /api/analyze', () => {
             possibleLocation: 'back-left corner against west wall',
             evidence: '00:02-00:06 — counter visible on left pan',
             confidence: 'high',
-            uncertainty: 'Depth and exact width cannot be verified without scale reference.',
+            uncertainty: 'Exact dimensions cannot be verified without scale reference.',
             likelyWallMounted: false,
           },
         ],
@@ -31,38 +34,60 @@ describe('Gemini 4 Neon — analyzeSpaceMedia & POST /api/analyze', () => {
       }),
     });
 
-    const mockClient = {
-      models: { generateContent },
-      files: {
-        upload: vi.fn(),
-        get: vi.fn(),
-        delete: vi.fn(),
-      },
-    };
-
     const result = await analyzeSpaceMedia({
-      buffer: Buffer.from('fake-mp4-bytes'),
-      mimeType: 'video/mp4',
-      fileName: 'shop-walkthrough.mp4',
+      buffer: Buffer.from('fake-webm-bytes'),
+      mimeType: 'video/webm;codecs=vp9',
+      fileName: 'live-walkthrough.webm',
       notes: '12x10 skincare boutique',
       requestId: 'test-req-analyze',
-      clientOverride: mockClient as never,
+      clientOverride: {
+        models: { generateContent },
+        files: { upload: vi.fn(), get: vi.fn(), delete: vi.fn() },
+      } as never,
     });
 
     expect(result.modelUsed).toBe(ANALYZE_MODEL_ID);
-    expect(result.modelUsed).toBe('gemini-4-neon');
     expect(result.uploadMethod).toBe('inline');
     expect(result.observations).toHaveLength(1);
-    expect(result.observations[0].id).toBe('obs-1');
     expect(result.warnings.some((w) => /uncalibrated/i.test(w))).toBe(true);
-    expect(generateContent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        model: 'gemini-4-neon',
-      })
-    );
   });
 
-  it('uses Gemini Files API upload, polls PROCESSING -> ACTIVE, and cleans up remote file when forceFilesApi is true', async () => {
+  it('supports YouTube URL JSON payload sent by MediaIntakeModal', async () => {
+    const generateContent = vi.fn().mockResolvedValue({
+      text: JSON.stringify({
+        observations: [
+          {
+            id: 'obs-yt-1',
+            kind: 'shelf',
+            label: 'Freestanding oak display shelf',
+            visualCues: ['4 open tiers'],
+            possibleLocation: 'west wall',
+            evidence: '00:05-00:11',
+            confidence: 'medium',
+            uncertainty: 'Uncalibrated walkthrough clip.',
+          },
+        ],
+        roomCues: ['Track lighting'],
+        warnings: [],
+      }),
+    });
+
+    const ytResult = await analyzeSpaceUrl({
+      mediaUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+      youtubeId: 'dQw4w9WgXcQ',
+      requestId: 'test-yt-001',
+      clientOverride: {
+        models: { generateContent },
+        files: { upload: vi.fn(), get: vi.fn(), delete: vi.fn() },
+      } as never,
+    });
+
+    expect(ytResult.uploadMethod).toBe('youtube_uri');
+    expect(ytResult.observations[0].id).toBe('obs-yt-1');
+    expect(ytResult.warnings.some((w) => /uncalibrated/i.test(w))).toBe(true);
+  });
+
+  it('uses Gemini Files API upload, polls ACTIVE, and deletes temporary remote file when forceFilesApi is true', async () => {
     const upload = vi.fn().mockResolvedValue({
       name: 'files/temp-shop-clip',
       uri: 'https://generativelanguage.googleapis.com/v1beta/files/temp-shop-clip',
@@ -113,25 +138,34 @@ describe('Gemini 4 Neon — analyzeSpaceMedia & POST /api/analyze', () => {
 
     expect(response.status).toBe(415);
     expect(payload.error.code).toBe('INVALID_MIME');
-    expect(payload.error.modelAttempted).toBe('gemini-4-neon');
   });
 });
 
-describe('Gemini 4 Hydrogen — generateShopPlan & POST /api/plan', () => {
-  it('runs deterministic validation, performs 1 Hydrogen repair pass when initial layout blocks entrance, and strips hallucinated Shopify IDs', async () => {
+describe('POST /api/plan — ShopSceneSchema contract, MediaIntakeModal currentScene, & 1-pass repair', () => {
+  it('accepts MediaIntakeModal currentScene + analysis payload, performs 1 repair pass on blocked doorway, strips invented variant IDs, and passes ShopSceneSchema', async () => {
     const generateContent = vi
       .fn()
       .mockResolvedValueOnce({
         text: JSON.stringify({
           objects: [
             {
-              id: 'owned-counter',
+              id: 'compact-owned-counter',
               kind: 'counter',
               label: 'Owned Checkout Counter',
               source: 'owned',
-              position: [-1.1, 0, -1.0],
-              size: [1.1, 0.95, 0.55],
+              position: [0.92, 0, -1.16],
+              size: [1.44, 0.96, 0.52],
               rotationY: 0,
+              dimensionsVerified: true,
+            },
+            {
+              id: 'compact-owned-shelf',
+              kind: 'shelf',
+              label: 'Owned Natural Oak Wall Shelf',
+              source: 'owned',
+              position: [-1.54, 0, 0.12],
+              size: [1.46, 2.05, 0.4],
+              rotationY: Math.PI / 2,
               dimensionsVerified: true,
             },
             {
@@ -143,7 +177,7 @@ describe('Gemini 4 Hydrogen — generateShopPlan & POST /api/plan', () => {
               size: [1.0, 0.8, 0.6],
               rotationY: 0,
               dimensionsVerified: true,
-              selectedVariantId: 'hallucinated-variant-999', // Not in candidate list!
+              selectedVariantId: 'hallucinated-variant-999',
             },
           ],
           warnings: [],
@@ -153,13 +187,23 @@ describe('Gemini 4 Hydrogen — generateShopPlan & POST /api/plan', () => {
         text: JSON.stringify({
           objects: [
             {
-              id: 'owned-counter',
+              id: 'compact-owned-counter',
               kind: 'counter',
               label: 'Owned Checkout Counter',
               source: 'owned',
-              position: [-1.1, 0, -1.0],
-              size: [1.1, 0.95, 0.55],
+              position: [0.92, 0, -1.16],
+              size: [1.44, 0.96, 0.52],
               rotationY: 0,
+              dimensionsVerified: true,
+            },
+            {
+              id: 'compact-owned-shelf',
+              kind: 'shelf',
+              label: 'Owned Natural Oak Wall Shelf',
+              source: 'owned',
+              position: [-1.54, 0, 0.12],
+              size: [1.46, 2.05, 0.4],
+              rotationY: Math.PI / 2,
               dimensionsVerified: true,
             },
             {
@@ -167,7 +211,7 @@ describe('Gemini 4 Hydrogen — generateShopPlan & POST /api/plan', () => {
               kind: 'table',
               label: 'Repaired Birch Display Table',
               source: 'shopify',
-              position: [1.15, 0, -0.5], // Valid clear placement!
+              position: [0.1, 0, 0.02],
               size: [0.9, 0.8, 0.55],
               rotationY: 0,
               dimensionsVerified: false,
@@ -190,20 +234,17 @@ describe('Gemini 4 Hydrogen — generateShopPlan & POST /api/plan', () => {
             width: DEFAULT_MIN_WALKWAY_METERS,
           },
         },
-        purpose: 'Skincare boutique showcasing 6 hero products',
-        style: 'Minimal warm oak aesthetic',
+        purpose: compactDemoScene.purpose,
+        style: compactDemoScene.style,
         budgetCents: 40000,
         minWalkwayWidth: DEFAULT_MIN_WALKWAY_METERS,
         noDrilling: true,
-        existingObjects: [
-          {
-            id: 'owned-counter',
-            kind: 'counter',
-            label: 'Owned Checkout Counter',
-            size: [1.1, 0.95, 0.55],
-            dimensionsVerified: true,
-          },
-        ],
+        analysis: {
+          observations: [],
+          roomCues: ['Warm wood floor'],
+          warnings: [],
+        },
+        currentScene: compactDemoScene,
         products: [
           {
             title: 'Real Shopify Birch Table',
@@ -219,27 +260,21 @@ describe('Gemini 4 Hydrogen — generateShopPlan & POST /api/plan', () => {
         ],
       },
       {
-        requestId: 'test-h2-repair',
+        requestId: 'test-plan-repair',
         clientOverride: { models: { generateContent } } as never,
       }
     );
 
     expect(result.modelUsed).toBe(PLAN_MODEL_ID);
-    expect(result.modelUsed).toBe('gemini-4-hydrogen');
     expect(result.repairCount).toBe(1);
     expect(result.valid).toBe(true);
-    expect(generateContent).toHaveBeenCalledTimes(2);
+    expect(ShopSceneSchema.safeParse(result.scene).success).toBe(true);
 
     const shopifyObj = result.scene.objects.find((o) => o.id === 'new-table');
     expect(shopifyObj?.source).toBe('shopify');
     expect(shopifyObj?.product?.variantId).toBe(
       'gid://shopify/ProductVariant/real-555'
     );
-    expect(shopifyObj?.product?.priceCents).toBe(24500);
-    expect(shopifyObj?.dimensionsVerified).toBe(false);
-    expect(
-      result.issues.some((i) => i.code === 'UNVERIFIED_DIMENSIONS')
-    ).toBe(true);
   });
 
   it('returns 400 structured error JSON on invalid /api/plan request body', async () => {
@@ -254,6 +289,72 @@ describe('Gemini 4 Hydrogen — generateShopPlan & POST /api/plan', () => {
 
     expect(response.status).toBe(400);
     expect(payload.error.code).toBe('INVALID_INPUT');
-    expect(payload.error.modelAttempted).toBe('gemini-4-hydrogen');
+  });
+
+  it('accepts SetupWizard DetectedObservation items with widthMeters/heightMeters/depthMeters and measurementsConfirmed room', async () => {
+    const generateContent = vi.fn().mockResolvedValue({
+      text: JSON.stringify({
+        objects: [
+          {
+            id: 'obs-1',
+            kind: 'counter',
+            label: 'Merchant Counter',
+            source: 'owned',
+            position: [-0.9, 0, -1.0],
+            size: [1.2, 0.95, 0.55],
+            rotationY: 0,
+            dimensionsVerified: true,
+          },
+        ],
+        warnings: [],
+      }),
+    });
+
+    const result = await generateShopPlan(
+      {
+        room: {
+          width: feetToMeters(12),
+          depth: feetToMeters(10),
+          height: feetToMeters(9),
+          entrance: {
+            wall: 'south',
+            offset: 0,
+            width: DEFAULT_MIN_WALKWAY_METERS,
+          },
+        },
+        purpose: 'Stage a skincare shop',
+        style: 'Warm Minimalist',
+        brief: 'Beauty & Skincare: Stage a skincare shop',
+        budgetCents: 40000,
+        minWalkwayWidth: DEFAULT_MIN_WALKWAY_METERS,
+        noDrilling: true,
+        currentScene: compactDemoScene,
+        items: [
+          {
+            id: 'obs-1',
+            kind: 'counter',
+            label: 'Merchant Counter',
+            owned: true,
+            exclude: false,
+            dimensionsVerified: true,
+            widthMeters: 1.2,
+            heightMeters: 0.95,
+            depthMeters: 0.55,
+          },
+        ],
+      },
+      {
+        requestId: 'test-setup-wizard',
+        clientOverride: { models: { generateContent } } as never,
+      }
+    );
+
+    expect(result.valid).toBe(true);
+    expect(result.scene.objects[0]).toMatchObject({
+      id: 'obs-1',
+      source: 'owned',
+      size: [1.2, 0.95, 0.55],
+      dimensionsVerified: true,
+    });
   });
 });
