@@ -30,6 +30,8 @@ import {
 export interface SceneObjectProps {
   object: SceneObjectType;
   isSelected: boolean;
+  isVoiceHighlighted?: boolean;
+  isPreviewOrigin?: boolean;
   hasError: boolean;
   hasWarning: boolean;
   interactive: boolean;
@@ -1667,6 +1669,8 @@ function SelectionHalo({
 export function SceneObject({
   object,
   isSelected,
+  isVoiceHighlighted = false,
+  isPreviewOrigin = false,
   hasError,
   hasWarning,
   interactive,
@@ -1855,21 +1859,34 @@ export function SceneObject({
     }
   });
 
-  const showHalo = isSelected || hasError || recentlySwapped;
+  const showHalo =
+    isSelected ||
+    hasError ||
+    recentlySwapped ||
+    isVoiceHighlighted ||
+    isPreviewOrigin;
   const haloColor = hasError
     ? '#ef4444'
-    : recentlySwapped
-      ? '#10b981'
-      : object.source === 'shopify'
-        ? '#34d399'
-        : '#0ea5e9';
+    : isVoiceHighlighted
+      ? '#a855f7'
+      : isPreviewOrigin
+        ? '#f59e0b'
+        : recentlySwapped
+          ? '#10b981'
+          : object.source === 'shopify'
+            ? '#34d399'
+            : '#0ea5e9';
   const ringColor = hasError
     ? '#ef4444'
-    : recentlySwapped || object.source === 'shopify'
-      ? '#10b981'
-      : hasWarning
-        ? '#f59e0b'
-        : '#0ea5e9';
+    : isVoiceHighlighted
+      ? '#c084fc'
+      : isPreviewOrigin
+        ? '#fbbf24'
+        : recentlySwapped || object.source === 'shopify'
+          ? '#10b981'
+          : hasWarning
+            ? '#f59e0b'
+            : '#0ea5e9';
 
   return (
     <group

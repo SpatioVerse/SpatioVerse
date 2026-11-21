@@ -33,6 +33,7 @@ import { MediaIntakeModal } from '@/components/MediaIntakeModal';
 import { ProductPanel } from '@/components/ProductPanel';
 import { SceneToolbar } from '@/components/SceneToolbar';
 import { SetupWizard } from '@/components/SetupWizard';
+import { VoiceRoomControl } from '@/components/VoiceRoomControl';
 import { validateScene } from '@/lib/constraints';
 import { computeReplacementPatch } from '@/lib/productVisuals';
 import {
@@ -1405,6 +1406,9 @@ export default function HomePage() {
           </div>
         </div>
       )}
+
+      {/* Live Multilingual Voice-Editing Control */}
+      <VoiceRoomControl />
 
       {/* Multimodal Media Intake Modal */}
       <MediaIntakeModal />
