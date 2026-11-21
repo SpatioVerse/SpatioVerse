@@ -1,29 +1,59 @@
 import type { SceneObject, SceneObjectKind, ShopScene, Vec3 } from '@/lib/schema';
 
-const KIND_HEIGHT_CAP_RATIO: Record<SceneObjectKind, number> = {
-  shelf: 0.82,
-  rack: 0.78,
-  lamp: 0.76,
-  plant: 0.68,
-  art: 0.65,
-  counter: 0.52,
-  table: 0.55,
-};
+interface FurnitureBounds {
+  min: Vec3;
+  max: Vec3;
+}
 
-const KIND_FOOTPRINT_CAP_RATIO: Record<SceneObjectKind, number> = {
-  shelf: 0.48,
-  rack: 0.44,
-  lamp: 0.24,
-  plant: 0.28,
-  art: 0.42,
-  counter: 0.50,
-  table: 0.52,
-};
+function resolveFurnitureBounds(
+  kind: SceneObjectKind,
+  label: string
+): FurnitureBounds {
+  const t = label.toLowerCase();
+
+  if (/\b(bed|mattress|daybed)\b/.test(t)) {
+    return { min: [1.55, 0.8, 1.9], max: [2.15, 1.15, 2.2] };
+  }
+  if (/\b(sofa|couch|sectional|loveseat|settee)\b/.test(t)) {
+    return { min: [1.55, 0.74, 0.78], max: [2.25, 0.95, 1.02] };
+  }
+  if (/\b(stool|ottoman|pouf)\b/.test(t)) {
+    return { min: [0.4, 0.42, 0.4], max: [0.68, 0.78, 0.68] };
+  }
+  if (/\b(chair|armchair|recliner|lounger|wingback|bench)\b/.test(t)) {
+    return { min: [0.55, 0.74, 0.55], max: [0.95, 1.02, 0.95] };
+  }
+  if (/\b(coffee\s*table)\b/.test(t)) {
+    return { min: [0.85, 0.36, 0.5], max: [1.32, 0.52, 0.78] };
+  }
+  if (/\b(end\s*table|side\s*table|nightstand|accent\s*table|round.*table)\b/.test(t)) {
+    return { min: [0.46, 0.48, 0.46], max: [0.82, 0.72, 0.82] };
+  }
+  if (/\b(desk|console|dining\s*table|display\s*table|table)\b/.test(t) || kind === 'table') {
+    return { min: [0.8, 0.55, 0.52], max: [1.65, 0.82, 0.95] };
+  }
+  if (kind === 'counter') {
+    return { min: [1.1, 0.86, 0.52], max: [1.8, 1.06, 0.82] };
+  }
+  if (kind === 'shelf' || kind === 'rack') {
+    return { min: [0.75, 1.25, 0.34], max: [1.5, 2.15, 0.62] };
+  }
+  if (kind === 'lamp') {
+    if (/\b(desk|table)\s+lamp\b/.test(t)) {
+      return { min: [0.24, 0.38, 0.24], max: [0.42, 0.62, 0.42] };
+    }
+    return { min: [0.36, 1.35, 0.36], max: [0.58, 1.82, 0.58] };
+  }
+  if (kind === 'plant') {
+    return { min: [0.42, 0.65, 0.42], max: [0.75, 1.45, 0.75] };
+  }
+  // art / mirror
+  return { min: [0.55, 0.75, 0.08], max: [1.35, 1.85, 0.35] };
+}
 
 /**
- * Scales an object's `[width, height, depth]` uniformly so its aspect ratio
- * remains natural while giving every furniture piece a substantial, realistic
- * presence proportional to the room's width, depth, and ceiling height.
+ * Normalizes `[width, height, depth]` into realistic real-world furniture
+ * proportions while respecting the room's physical envelope.
  */
 export function normalizeObjectSizeForRoom(
   size: Vec3,
@@ -31,77 +61,24 @@ export function normalizeObjectSizeForRoom(
   room: ShopScene['room'],
   label = ''
 ): Vec3 {
-  let [w, h, d] = size;
-  if (!Number.isFinite(w) || w <= 0) w = 0.9;
-  if (!Number.isFinite(h) || h <= 0) h = 0.9;
-  if (!Number.isFinite(d) || d <= 0) d = 0.7;
+  const bounds = resolveFurnitureBounds(kind, label);
+  const rawW = Number.isFinite(size[0]) && size[0] > 0 ? size[0] : (bounds.min[0] + bounds.max[0]) / 2;
+  const rawH = Number.isFinite(size[1]) && size[1] > 0 ? size[1] : (bounds.min[1] + bounds.max[1]) / 2;
+  const rawD = Number.isFinite(size[2]) && size[2] > 0 ? size[2] : (bounds.min[2] + bounds.max[2]) / 2;
 
-  const text = label.toLowerCase();
-  const isBed = /\b(bed|mattress|daybed)\b/.test(text);
-  const isSofa = /\b(sofa|couch|sectional|loveseat|settee)\b/.test(text);
-  const isFloorLamp = kind === 'lamp' && !/\b(desk|table)\s+lamp\b/.test(text);
+  const roomMaxW = Math.max(0.6, room.width * 0.45);
+  const roomMaxH = Math.max(0.6, room.height * 0.76);
+  const roomMaxD = Math.max(0.5, room.depth * 0.45);
 
-  // Larger rooms (e.g. 24x18 ft flagship) need proportionally fuller furniture presence
-  const roomDiag = Math.hypot(room.width, room.depth);
-  const roomScale = Math.max(1.0, Math.min(1.38, roomDiag / 6.0));
+  const clampAxis = (val: number, minV: number, maxV: number, roomCap: number) => {
+    const cap = Math.min(maxV, roomCap);
+    const floor = Math.min(minV, cap);
+    return Math.max(floor, Math.min(cap, val));
+  };
 
-  const maxH = Math.max(
-    0.75,
-    Math.min(2.65, room.height * (KIND_HEIGHT_CAP_RATIO[kind] ?? 0.72))
-  );
-  const footprintCap = isBed || isSofa ? 0.56 : (KIND_FOOTPRINT_CAP_RATIO[kind] ?? 0.48);
-  const maxW = Math.max(0.75, Math.min(2.9, room.width * footprintCap));
-  const maxD = Math.max(0.65, Math.min(isBed ? 2.55 : 1.9, room.depth * footprintCap));
-
-  // Target realistic minimums by furniture type & room scale
-  let minW = 0.62 * roomScale;
-  let minD = 0.52 * roomScale;
-  let minH = 0.62 * roomScale;
-
-  if (isBed) {
-    minW = 1.85 * Math.min(1.2, roomScale);
-    minD = 2.05 * Math.min(1.2, roomScale);
-    minH = 1.05 * Math.min(1.18, roomScale);
-  } else if (isSofa) {
-    minW = 1.95 * Math.min(1.22, roomScale);
-    minD = 0.92 * Math.min(1.15, roomScale);
-    minH = 0.88 * Math.min(1.15, roomScale);
-  } else if (kind === 'plant') {
-    minW = 0.62 * roomScale;
-    minD = 0.62 * roomScale;
-    minH = 1.05 * roomScale;
-  } else if (isFloorLamp) {
-    minW = 0.52 * roomScale;
-    minD = 0.52 * roomScale;
-    minH = 1.65 * Math.min(1.18, roomScale);
-  } else if (kind === 'shelf' || kind === 'rack') {
-    minW = 0.95 * Math.min(1.2, roomScale);
-    minD = 0.42 * Math.min(1.15, roomScale);
-    minH = 1.75 * Math.min(1.18, roomScale);
-  } else if (kind === 'counter') {
-    minW = 1.35 * Math.min(1.2, roomScale);
-    minD = 0.65 * Math.min(1.15, roomScale);
-    minH = 0.96 * Math.min(1.12, roomScale);
-  }
-
-  // First grow uniformly if object is too small for the room
-  const growRatio = Math.max(
-    1,
-    minW / Math.max(w, 0.05),
-    minH / Math.max(h, 0.05),
-    minD / Math.max(d, 0.05)
-  );
-  // Cap growth so aspect ratio stays natural without blowing past room bounds
-  const cappedGrow = Math.min(growRatio, 1.55);
-  w *= cappedGrow;
-  h *= cappedGrow;
-  d *= cappedGrow;
-
-  // Then shrink uniformly only if it exceeds room envelope caps
-  const shrinkScale = Math.min(1, maxW / w, maxH / h, maxD / d);
-  w *= shrinkScale;
-  h *= shrinkScale;
-  d *= shrinkScale;
+  const w = clampAxis(rawW, bounds.min[0], bounds.max[0], roomMaxW);
+  const h = clampAxis(rawH, bounds.min[1], bounds.max[1], roomMaxH);
+  const d = clampAxis(rawD, bounds.min[2], bounds.max[2], roomMaxD);
 
   return [
     Number(w.toFixed(2)),
