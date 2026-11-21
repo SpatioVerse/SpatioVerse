@@ -206,6 +206,71 @@ const RESPONSE_JSON_SCHEMA = {
             properties: { type: { const: 'dismiss_proactive_suggestion' } },
             required: ['type'],
           },
+          {
+            type: 'object',
+            properties: {
+              type: { const: 'browse_shopify_products' },
+              query: { type: 'string' },
+              maxPriceDollars: { type: 'number' },
+            },
+            required: ['type', 'query'],
+          },
+          {
+            type: 'object',
+            properties: {
+              type: { const: 'apply_shopify_product' },
+              productIndex: { type: 'integer', minimum: 1, maximum: 12 },
+              mode: { type: 'string', enum: ['add', 'replace'] },
+              targetObjectId: { type: 'string' },
+            },
+            required: ['type', 'productIndex', 'mode'],
+          },
+          {
+            type: 'object',
+            properties: {
+              type: { const: 'place_shopify_order' },
+              productIndex: { type: 'integer', minimum: 1, maximum: 12 },
+            },
+            required: ['type'],
+          },
+          {
+            type: 'object',
+            properties: {
+              type: { const: 'clear_room' },
+              keepObjectIds: { type: 'array', items: { type: 'string' } },
+            },
+            required: ['type'],
+          },
+          {
+            type: 'object',
+            properties: {
+              type: { const: 'redesign_room_style' },
+              style: { type: 'string' },
+              brief: { type: 'string' },
+              budgetDollars: { type: 'number' },
+              keepExistingObjects: { type: 'boolean' },
+              keepObjectIds: { type: 'array', items: { type: 'string' } },
+            },
+            required: ['type', 'style'],
+          },
+          {
+            type: 'object',
+            properties: {
+              type: { const: 'draft_design_prompt' },
+              prompt: { type: 'string' },
+              mode: { type: 'string', enum: ['redesign', 'add', 'replace'] },
+              style: { type: 'string' },
+              budgetDollars: { type: 'number' },
+              keepObjectIds: { type: 'array', items: { type: 'string' } },
+              targetObjectId: { type: 'string' },
+            },
+            required: ['type', 'prompt', 'mode'],
+          },
+          {
+            type: 'object',
+            properties: { type: { const: 'render_from_prompt' } },
+            required: ['type'],
+          },
         ],
       },
     },

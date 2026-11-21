@@ -19,7 +19,7 @@ import {
   type VoiceAction,
 } from '@/lib/voiceActions';
 import {
-  executeVoiceAction,
+  executeVoiceActionAsync,
   type ActionExecutionResult,
 } from '@/lib/voiceExecutor';
 import { useSceneStore } from '@/store/useSceneStore';
@@ -223,6 +223,143 @@ const LIVE_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
     name: 'dismiss_proactive_suggestion',
     description:
       'Dismiss the active proactive improvement suggestion when the user declines (e.g. "No thanks", "रहने दो").',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
+  {
+    name: 'browse_shopify_products',
+    description:
+      'Search live Shopify products and open the right-hand Shop Products side view showing the suggested products. Returns numbered options (1, 2, 3...) with real titles, sellers, and prices.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        query: {
+          type: Type.STRING,
+          description: 'Furniture or decor search query (e.g. "round walnut table", "cream sofa", "floor lamp").',
+        },
+        maxPriceDollars: {
+          type: Type.NUMBER,
+          description: 'Optional maximum price in USD dollars if the user specifies a budget.',
+        },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'apply_shopify_product',
+    description:
+      'Add or replace a 3D item in the room using a numbered product from the currently shown Shopify side-panel list (1-based productIndex).',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        productIndex: {
+          type: Type.INTEGER,
+          description: '1-based index of the product shown in the Shop Products side panel (e.g. 1 for the first option).',
+        },
+        mode: {
+          type: Type.STRING,
+          enum: ['add', 'replace'],
+          description: '"add" inserts a new product into the room; "replace" swaps the selected/target object.',
+        },
+        targetObjectId: {
+          type: Type.STRING,
+          description: 'Optional exact object ID when mode="replace".',
+        },
+      },
+      required: ['productIndex', 'mode'],
+    },
+  },
+  {
+    name: 'place_shopify_order',
+    description:
+      'Create a live Shopify merchant order / checkout cart for a numbered product from the Shop Products list or for all Shopify items currently placed in the 3D room, and open the side view with the checkout link.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        productIndex: {
+          type: Type.INTEGER,
+          description: 'Optional 1-based product index from the browsed Shopify list. Omit to order all Shopify products currently placed in the room.',
+        },
+      },
+    },
+  },
+  {
+    name: 'clear_room',
+    description:
+      'Clear all furniture objects from the 3D room (or remove everything except specific keepObjectIds). Always 1-step undoable.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        keepObjectIds: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+          description: 'Optional exact object IDs from LIVE ROOM CONTEXT to keep while clearing all other items.',
+        },
+      },
+    },
+  },
+  {
+    name: 'redesign_room_style',
+    description:
+      'Replace the whole room layout with a fresh, constraint-validated 3D design tailored to the user’s style (e.g. minimalist, decorative, cozy, luxury) and budget, optionally keeping specific items and furnishing with live Shopify products.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        style: {
+          type: Type.STRING,
+          description: 'Requested room aesthetic or style (e.g. "minimalist", "decorative cozy", "warm modern", "boutique luxury").',
+        },
+        brief: {
+          type: Type.STRING,
+          description: 'Optional extra user preferences (colors, mood, specific furniture requests).',
+        },
+        budgetDollars: {
+          type: Type.NUMBER,
+          description: 'Optional budget in USD dollars for new items (e.g. 500, 1200).',
+        },
+        keepExistingObjects: {
+          type: Type.BOOLEAN,
+          description: 'True to keep all current owned items and redesign around them; false (default) to replace the whole layout freshly.',
+        },
+        keepObjectIds: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+          description: 'Optional exact object IDs to keep while replacing everything else.',
+        },
+      },
+      required: ['style'],
+    },
+  },
+  {
+    name: 'draft_design_prompt',
+    description:
+      'Write a clean, structured design prompt FIRST (shown on screen) before rendering any new object or room redesign so objects are never repeatedly replaced while the user is still speaking.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        prompt: {
+          type: Type.STRING,
+          description: 'Clear, specific design prompt describing the exact object(s), style, colors, and placement to render.',
+        },
+        mode: {
+          type: Type.STRING,
+          enum: ['redesign', 'add', 'replace'],
+          description: '"redesign" for whole-room layout, "add" to insert one new object, "replace" to swap one target object.',
+        },
+        style: { type: Type.STRING },
+        budgetDollars: { type: Type.NUMBER },
+        keepObjectIds: { type: Type.ARRAY, items: { type: Type.STRING } },
+        targetObjectId: { type: Type.STRING },
+      },
+      required: ['prompt', 'mode'],
+    },
+  },
+  {
+    name: 'render_from_prompt',
+    description:
+      'Render the currently drafted design prompt into the 3D scene ONCE after the user confirms (e.g. "Yes", "Render it", "Go ahead"). Enforces natural room-proportional sizing and zero duplicate objects.',
     parameters: {
       type: Type.OBJECT,
       properties: {},
@@ -604,46 +741,52 @@ export class VoiceLiveClient {
       }
     }
 
-    // Typed tool calls from Gemini Live
+    // Typed tool calls from Gemini Live (async to support live Shopify browsing & ordering)
     if (msg.toolCall?.functionCalls && msg.toolCall.functionCalls.length > 0) {
       this.setPhase('thinking');
       const capturedEpoch = useSceneStore.getState().editEpoch;
-      const functionResponses = msg.toolCall.functionCalls.map((fc) => {
-        const action = mapToolCallToVoiceAction(
-          fc.name ?? '',
-          (fc.args as Record<string, unknown> | undefined) ?? {}
+      const calls = msg.toolCall.functionCalls;
+      void (async () => {
+        const functionResponses = await Promise.all(
+          calls.map(async (fc) => {
+            const action = mapToolCallToVoiceAction(
+              fc.name ?? '',
+              (fc.args as Record<string, unknown> | undefined) ?? {}
+            );
+
+            let result: ActionExecutionResult;
+            if (!action) {
+              result = {
+                ok: false,
+                actionType: 'select_object',
+                summary: `Unsupported or malformed tool arguments for ${fc.name}.`,
+              };
+            } else {
+              result = await executeVoiceActionAsync(action, capturedEpoch);
+              if (result.updatedPreferredLanguage) {
+                this.preferredLanguage = result.updatedPreferredLanguage;
+                this.callbacks.onPreferredLanguageChange(
+                  result.updatedPreferredLanguage
+                );
+              }
+              this.callbacks.onActionResult(result);
+            }
+
+            return {
+              id: fc.id,
+              name: fc.name,
+              response: result as unknown as Record<string, unknown>,
+            };
+          })
         );
 
-        let result: ActionExecutionResult;
-        if (!action) {
-          result = {
-            ok: false,
-            actionType: 'select_object',
-            summary: `Unsupported or malformed tool arguments for ${fc.name}.`,
-          };
-        } else {
-          result = executeVoiceAction(action, capturedEpoch);
-          if (result.updatedPreferredLanguage) {
-            this.preferredLanguage = result.updatedPreferredLanguage;
-            this.callbacks.onPreferredLanguageChange(
-              result.updatedPreferredLanguage
-            );
-          }
-          this.callbacks.onActionResult(result);
+        if (this.closed) return;
+        try {
+          this.session?.sendToolResponse({ functionResponses });
+        } catch {
+          // Ignore if session closed mid-turn
         }
-
-        return {
-          id: fc.id,
-          name: fc.name,
-          response: result as unknown as Record<string, unknown>,
-        };
-      });
-
-      try {
-        this.session?.sendToolResponse({ functionResponses });
-      } catch {
-        // Ignore if session closed mid-turn
-      }
+      })();
     }
 
     if (msg.serverContent?.turnComplete) {

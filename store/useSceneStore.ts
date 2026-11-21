@@ -9,6 +9,7 @@ import { validateScene } from '@/lib/constraints';
 import {
   ShopSceneSchema,
   type ConstraintIssue,
+  type ProductRef,
   type SceneObject,
   type SceneValidator,
   type ShopScene,
@@ -26,6 +27,16 @@ import {
   type PreviewObjectDelta,
   type VoicePreviewState,
 } from '@/lib/voiceActions';
+
+export interface DraftedDesignPrompt {
+  prompt: string;
+  mode: 'redesign' | 'add' | 'replace';
+  style?: string;
+  budgetDollars?: number;
+  keepObjectIds?: string[];
+  targetObjectId?: string;
+  createdAt: number;
+}
 
 export type CameraMode = 'orbit' | 'walkthrough';
 export type CameraPreset = 'perspective' | 'top' | 'entrance';
@@ -143,6 +154,34 @@ export interface SceneStoreState {
   dismissedSuggestionKeys: string[];
   /** Incremented whenever a new proactive suggestion is generated for voice announcement */
   proactiveTick: number;
+  /** Incremented when voice requests opening the right-hand Shop Products side view */
+  shopDrawerRequestedEpoch: number;
+  /** Latest Shopify search query triggered by voice */
+  voiceShopQuery: string | null;
+  /** Latest live Shopify products fetched by voice (1-based index matches spoken option numbers) */
+  voiceShopProducts: ProductRef[];
+  /** Latest merchant cart/checkout handoff created by voice order command */
+  voiceOrderResult: {
+    carts: Array<{
+      seller: string;
+      sellerDomain?: string;
+      cartUrl: string | null;
+      checkoutUrl?: string | null;
+      subtotalCents?: number;
+      totalCents?: number;
+      currency?: string;
+      fallbackProductUrls?: Array<{
+        variantId: string;
+        quantity: number;
+        productUrl: string | null;
+      }>;
+    }>;
+    warnings: string[];
+  } | null;
+  /** Structured design prompt drafted by the voice agent before rendering */
+  draftedDesignPrompt: DraftedDesignPrompt | null;
+  /** Lock flag preventing concurrent/duplicate prompt renders while speaking */
+  isRenderingPrompt: boolean;
 
   hydrateFromStorage: () => void;
   selectObject: (id: string | null) => void;
@@ -152,6 +191,7 @@ export interface SceneStoreState {
   toggleGrid: () => void;
   setValidator: (validator: SceneValidator) => void;
   setScene: (scene: ShopScene, preset?: ScenePresetKey) => void;
+  replaceSceneUndoable: (scene: ShopScene) => void;
   switchPreset: (preset: ScenePresetKey) => void;
   moveObject: (id: string, position: Vec3) => void;
   rotateObject: (id: string, deltaRadians: number) => void;
@@ -169,6 +209,29 @@ export interface SceneStoreState {
     id: string,
     override: VisionModelOverride | null
   ) => void;
+  requestOpenShopDrawer: (query?: string) => void;
+  setVoiceShopResults: (query: string, products: ProductRef[]) => void;
+  setVoiceOrderResult: (
+    result: {
+      carts: Array<{
+        seller: string;
+        sellerDomain?: string;
+        cartUrl: string | null;
+        checkoutUrl?: string | null;
+        subtotalCents?: number;
+        totalCents?: number;
+        currency?: string;
+        fallbackProductUrls?: Array<{
+          variantId: string;
+          quantity: number;
+          productUrl: string | null;
+        }>;
+      }>;
+      warnings: string[];
+    } | null
+  ) => void;
+  setDraftedDesignPrompt: (draft: DraftedDesignPrompt | null) => void;
+  setIsRenderingPrompt: (rendering: boolean) => void;
 
   bumpEditEpoch: () => number;
   setVoiceHighlightIds: (ids: string[]) => void;
@@ -229,6 +292,12 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
   proactiveSuggestion: null,
   dismissedSuggestionKeys: [],
   proactiveTick: 0,
+  shopDrawerRequestedEpoch: 0,
+  voiceShopQuery: null,
+  voiceShopProducts: [],
+  voiceOrderResult: null,
+  draftedDesignPrompt: null,
+  isRenderingPrompt: false,
 
   hydrateFromStorage: () => {
     if (typeof window === 'undefined') {
@@ -384,6 +453,31 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
         activePreset: nextPreset,
         selectedId: stillSelected,
         isDragging: false,
+        issues: state.validator(nextScene),
+      };
+    });
+  },
+
+  replaceSceneUndoable: (scene) => {
+    const nextScene = cloneScene(scene);
+    set((state) => {
+      const stillSelected =
+        state.selectedId &&
+        nextScene.objects.some((obj) => obj.id === state.selectedId)
+          ? state.selectedId
+          : null;
+      persistSceneState(state.activePreset, nextScene);
+      return {
+        scene: nextScene,
+        selectedId: stillSelected,
+        isDragging: false,
+        voicePreview: null,
+        voiceHighlightIds: [],
+        layoutOptions: [],
+        proactiveSuggestion: null,
+        undoStack: pushUndoSnapshot(state.undoStack, state.scene),
+        dragStartSnapshot: null,
+        editEpoch: state.editEpoch + 1,
         issues: state.validator(nextScene),
       };
     });
@@ -1035,5 +1129,38 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
         dismissedSuggestionKeys: nextDismissed,
       };
     });
+  },
+
+  requestOpenShopDrawer: (query) => {
+    set((state) => ({
+      rightPanelTab: 'shop',
+      shopDrawerRequestedEpoch: state.shopDrawerRequestedEpoch + 1,
+      ...(typeof query === 'string' ? { voiceShopQuery: query } : {}),
+    }));
+  },
+
+  setVoiceShopResults: (query, products) => {
+    set((state) => ({
+      rightPanelTab: 'shop',
+      shopDrawerRequestedEpoch: state.shopDrawerRequestedEpoch + 1,
+      voiceShopQuery: query,
+      voiceShopProducts: products,
+    }));
+  },
+
+  setVoiceOrderResult: (result) => {
+    set((state) => ({
+      rightPanelTab: 'shop',
+      shopDrawerRequestedEpoch: state.shopDrawerRequestedEpoch + 1,
+      voiceOrderResult: result,
+    }));
+  },
+
+  setDraftedDesignPrompt: (draft) => {
+    set({ draftedDesignPrompt: draft });
+  },
+
+  setIsRenderingPrompt: (rendering) => {
+    set({ isRenderingPrompt: rendering });
   },
 }));

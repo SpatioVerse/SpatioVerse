@@ -209,26 +209,26 @@ function GlbNormalizedModel({
 
     let finalScale: [number, number, number];
     if (fitMode === 'height') {
-      const byHeight = targetH / sy;
-      const byWidth = (targetW * 1.55) / sx;
-      const byDepth = (targetD * 1.55) / sz;
+      const byHeight = (targetH * 1.12) / sy;
+      const byWidth = (targetW * 1.65) / sx;
+      const byDepth = (targetD * 1.65) / sz;
       const u = Math.min(byHeight, byWidth, byDepth);
       const safeU = Number.isFinite(u) && u > 0 ? u : 1;
       finalScale = [safeU, safeU, safeU];
     } else if (fitMode === 'fill') {
-      const rx = targetW / sx;
-      const ry = targetH / sy;
-      const rz = targetD / sz;
+      const rx = (targetW * 1.12) / sx;
+      const ry = (targetH * 1.12) / sy;
+      const rz = (targetD * 1.12) / sz;
       const base = Math.cbrt(Math.max(1e-6, rx * ry * rz));
       const clampAxis = (r: number) =>
-        Math.max(base * 0.72, Math.min(base * 1.38, r));
+        Math.max(base * 0.78, Math.min(base * 1.42, r));
       finalScale = [
-        Math.min(rx, clampAxis(rx)),
-        Math.min(ry, clampAxis(ry)),
-        Math.min(rz, clampAxis(rz)),
+        clampAxis(rx),
+        clampAxis(ry),
+        clampAxis(rz),
       ];
     } else {
-      const u = Math.min(targetW / sx, targetH / sy, targetD / sz);
+      const u = Math.min(targetW / sx, targetH / sy, targetD / sz) * 1.12;
       const safeU = Number.isFinite(u) && u > 0 ? u : 1;
       finalScale = [safeU, safeU, safeU];
     }

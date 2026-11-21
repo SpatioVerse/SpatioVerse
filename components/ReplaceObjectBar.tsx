@@ -6,6 +6,7 @@ import {
   Loader2,
   Mic,
   MicOff,
+  Plus,
   Send,
   Sparkles,
   AlertTriangle,
@@ -118,9 +119,14 @@ export function ReplaceObjectBar({ selectedObject }: ReplaceObjectBarProps) {
   }, []);
 
   const submitCommand = useCallback(
-    async (rawText: string) => {
+    async (rawText: string, mode: 'auto' | 'add' = 'auto') => {
       const trimmed = rawText.trim();
       if (!trimmed || isSubmitting) return;
+
+      const finalCommand =
+        mode === 'add' && !/^(add|place|put|insert|bring)\b/i.test(trimmed)
+          ? `Add ${trimmed}`
+          : trimmed;
 
       setIsSubmitting(true);
       setFeedback(null);
@@ -130,9 +136,9 @@ export function ReplaceObjectBar({ selectedObject }: ReplaceObjectBarProps) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            command: trimmed,
+            command: finalCommand,
             scene,
-            selectedObjectId: selectedObject?.id ?? null,
+            selectedObjectId: mode === 'add' ? null : (selectedObject?.id ?? null),
           }),
         });
 
@@ -259,8 +265,8 @@ export function ReplaceObjectBar({ selectedObject }: ReplaceObjectBarProps) {
           onChange={(e) => setCommand(e.target.value)}
           placeholder={
             selectedObject
-              ? `Replace "${selectedObject.label}" (type or speak)…`
-              : 'Type or speak: "Replace the sofa with a cream linen sofa"…'
+              ? `Replace "${selectedObject.label}" or add an item (type or speak)…`
+              : 'Type or speak: "Add a round walnut table" or "Replace the sofa…" '
           }
           className="min-w-0 flex-1 bg-transparent text-xs text-white placeholder:text-zinc-400 focus:outline-none"
         />
@@ -269,8 +275,8 @@ export function ReplaceObjectBar({ selectedObject }: ReplaceObjectBarProps) {
           type="button"
           onClick={toggleVoiceInput}
           disabled={isSubmitting}
-          title={isListening ? 'Stop voice input' : 'Speak replacement command'}
-          aria-label={isListening ? 'Stop voice input' : 'Speak replacement command'}
+          title={isListening ? 'Stop voice input' : 'Speak add or replace command'}
+          aria-label={isListening ? 'Stop voice input' : 'Speak add or replace command'}
           className={`flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-xl transition-colors ${
             isListening
               ? 'animate-pulse bg-red-500 text-white'
@@ -285,6 +291,21 @@ export function ReplaceObjectBar({ selectedObject }: ReplaceObjectBarProps) {
         </button>
 
         <button
+          type="button"
+          onClick={() => void submitCommand(command, 'add')}
+          disabled={isSubmitting || !command.trim()}
+          title="Add as a new item in the 3D scene"
+          className="flex h-7 shrink-0 cursor-pointer items-center gap-1 rounded-xl bg-emerald-400 px-2.5 text-[11px] font-semibold text-zinc-950 transition-all hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          {isSubmitting ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Plus className="h-3.5 w-3.5" />
+          )}
+          <span>Add</span>
+        </button>
+
+        <button
           type="submit"
           disabled={isSubmitting || !command.trim()}
           className="flex h-7 shrink-0 cursor-pointer items-center gap-1 rounded-xl bg-gradient-to-r from-amber-300 to-emerald-300 px-2.5 text-[11px] font-semibold text-zinc-950 transition-all hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-45"
@@ -294,7 +315,7 @@ export function ReplaceObjectBar({ selectedObject }: ReplaceObjectBarProps) {
           ) : (
             <Send className="h-3 w-3" />
           )}
-          <span>{isSubmitting ? 'Swapping…' : 'Swap'}</span>
+          <span>{isSubmitting ? 'Working…' : 'Swap'}</span>
         </button>
       </form>
 

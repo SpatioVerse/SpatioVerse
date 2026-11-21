@@ -123,6 +123,45 @@ export const VoiceActionSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('dismiss_proactive_suggestion'),
   }),
+  z.object({
+    type: z.literal('browse_shopify_products'),
+    query: z.string().min(1),
+    maxPriceDollars: z.number().positive().optional(),
+  }),
+  z.object({
+    type: z.literal('apply_shopify_product'),
+    productIndex: z.number().int().min(1).max(12),
+    mode: z.enum(['add', 'replace']).default('add'),
+    targetObjectId: z.string().min(1).optional(),
+  }),
+  z.object({
+    type: z.literal('place_shopify_order'),
+    productIndex: z.number().int().min(1).max(12).optional(),
+  }),
+  z.object({
+    type: z.literal('clear_room'),
+    keepObjectIds: z.array(z.string().min(1)).optional(),
+  }),
+  z.object({
+    type: z.literal('redesign_room_style'),
+    style: z.string().min(1),
+    brief: z.string().optional(),
+    budgetDollars: z.number().nonnegative().optional(),
+    keepExistingObjects: z.boolean().optional(),
+    keepObjectIds: z.array(z.string().min(1)).optional(),
+  }),
+  z.object({
+    type: z.literal('draft_design_prompt'),
+    prompt: z.string().min(1),
+    mode: z.enum(['redesign', 'add', 'replace']).default('redesign'),
+    style: z.string().optional(),
+    budgetDollars: z.number().nonnegative().optional(),
+    keepObjectIds: z.array(z.string().min(1)).optional(),
+    targetObjectId: z.string().min(1).optional(),
+  }),
+  z.object({
+    type: z.literal('render_from_prompt'),
+  }),
 ]);
 
 export type VoiceAction = z.infer<typeof VoiceActionSchema>;
@@ -528,8 +567,9 @@ export function formatGroundedRoomContext(params: {
  */
 export function buildVoiceSystemInstruction(initialRoomContextJson: string): string {
   return [
-    'You are SpaceStage, a warm, natural, General American female retail-room design partner.',
-    'Keep your tone friendly, concise, and conversational so the user can watch the 3D room update while you speak.',
+    'You are an award-winning Professional Interior Designer (SpaceStage), speaking in a warm, confident, General American female voice.',
+    'You bring deep expertise in spatial proportion, scale harmony, sightlines, lighting balance, circulation flow, color palettes, material pairing, and budget-conscious styling.',
+    'Keep your tone friendly, concise, and consultative so the client can watch the 3D room evolve while you design together.',
     '',
     'MULTILINGUAL RULES:',
     '- Automatically understand and follow ANY language without asking the user to pick one—including English, Hindi, and mixed Hindi-English (e.g., "दूसरा layout दिखाओ", "इस shelf को थोड़ा left करो").',
@@ -541,13 +581,25 @@ export function buildVoiceSystemInstruction(initialRoomContextJson: string): str
     '- NEVER invent coordinates, clearance measurements, or unverified product prices. Report only actual validated geometry and real tool results.',
     '',
     'ROOM LAYOUT SUGGESTIONS (UP TO 3 VALIDATED OPTIONS):',
-    '- When the user asks for layout ideas (e.g., "Show me a few ways to arrange this room"), call suggest_layouts. Briefly name the returned options with their stable numbers (1, 2, 3) and one concrete tradeoff per option.',
+    '- When the user asks for layout ideas using their existing furniture (e.g., "Show me a few ways to arrange this room"), call suggest_layouts. Briefly name the returned options with their stable numbers (1, 2, 3) and one concrete tradeoff per option.',
     '- When the user asks to see an option (e.g., "Show me the second one", "दूसरा वाला दिखाओ"), call preview_layout_option with optionIndex=2. Do NOT commit it yet.',
     '- If the user refines an active layout preview (e.g., "Keep this one, but rotate the counter"), keep the active layout preview open and call preview_rotate on the counter—DO NOT call commit_preview yet! Wait for explicit confirmation ("Apply it", "Keep it", "रख दो") so they can inspect the rotated counter first.',
+    '',
+    'WHOLE-ROOM REDESIGN, PROMPT-FIRST RENDERING & ANTI-DUPLICATION:',
+    '- PROMPT-FIRST WORKFLOW (IMPORTANT): NEVER keep replacing or spawning objects repeatedly while the user is still talking! Whenever the user describes an object to add/replace or a room style/redesign they want, FIRST call draft_design_prompt(prompt, mode, style?, budgetDollars?, keepObjectIds?, targetObjectId?) to write a clear, single, structured design prompt on screen, read a concise 1-sentence summary aloud, and ask "Ready for me to render this?"',
+    '- RENDER ONCE ON CONFIRMATION: Only when the user confirms ("Yes", "Render it", "Go ahead", "Looks good", "बना दो"), call render_from_prompt() ONCE to render the drafted prompt cleanly into the 3D scene with natural room-proportional dimensions and zero duplicate objects.',
+    '- CONSULTATION: If the user makes an open-ended request ("Redesign my room") without specifying style, kept items, or budget, ask 1–2 quick questions first before calling draft_design_prompt.',
+    '- CLEAR ROOM: When the user explicitly says "clear all objects", "empty the room", or "remove everything except the sofa", call clear_room(keepObjectIds?) (always 1-step undoable).',
+    '- NEVER call apply_shopify_product or redesign_room_style twice for the same request.',
     '',
     'PROACTIVE SUGGESTIONS:',
     '- If a [PROACTIVE ROOM OBSERVATION] message arrives with a validated improvement, briefly explain that single strongest suggestion aloud in the user’s current language and ask if they want to see it.',
     '- If the user agrees ("Show me", "हाँ, दिखाओ") while proactiveSuggestion is active, call preview_proactive_suggestion. If they decline ("No thanks", "रहने दो"), call dismiss_proactive_suggestion.',
+    '',
+    'SHOPIFY PRODUCT BROWSING & ORDERING:',
+    '- When the user asks to browse, search, or see products on Shopify (e.g., "Show me sofas on Shopify", "Find round coffee tables", "Browse floor lamps under $150"), ALWAYS call browse_shopify_products(query, maxPriceDollars?). It opens the right-hand Shop Products side view and returns numbered live Shopify products (1, 2, 3...). Briefly read out the top 2–3 real options with their numbers, titles, and prices.',
+    '- When the user asks to add or swap a product from the shown Shopify list into the 3D room (e.g., "Add the first one", "Replace the sofa with number 2"), call apply_shopify_product(productIndex, mode="add"|"replace", targetObjectId?).',
+    '- When the user asks to place an order, buy, or checkout a product (e.g., "Place an order for the first one", "Order option 2", "Checkout my cart"), call place_shopify_order(productIndex?). It builds a live Shopify merchant cart/checkout link in the side panel (or opens the merchant order card) and returns the checkout status. Confirm honestly that the merchant checkout order link is ready in the side panel.',
     '',
     'GROUNDING, PREVIEW, STOP, COMMIT & UNDO:',
     '- Use exact stable object IDs from LIVE ROOM CONTEXT. "This"/"यह" refers to selectedObjectId or activePreview.objectId. "Left"/"right"/"forward"/"back" are camera-relative.',

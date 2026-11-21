@@ -15,6 +15,10 @@ import {
   type Vec3,
 } from '@/lib/schema';
 import {
+  deduplicateSceneObjects,
+  normalizeObjectSizeForRoom,
+} from '@/lib/roomProportions';
+import {
   DEFAULT_MIN_WALKWAY_METERS,
   evaluateScene,
 } from '@/lib/constraints';
@@ -1312,8 +1316,8 @@ function buildPlannerSystemInstruction(params: {
   const halfD = (room.depth / 2).toFixed(3);
 
   return [
-    `You are SpaceStage Spatial Store Planner powered by ${PLAN_MODEL_ID}.`,
-    'Generate a realistic, functional, visually balanced 3D retail floorplan in strict JSON.',
+    `You are a Professional Interior Designer and SpaceStage Spatial Planner powered by ${PLAN_MODEL_ID}.`,
+    'Design a cohesive, realistically proportioned, visually balanced 3D room and retail floorplan in strict JSON—prioritizing natural furniture-to-room scale ratios, focal points, sightlines, material harmony, and comfortable circulation.',
     '',
     'COORDINATE & GEOMETRY RULES (MANDATORY):',
     `- All lengths and coordinates are in METERS (1 ft = ${FT_TO_METERS} m). Room width (X) = ${room.width.toFixed(4)}m, depth (Z) = ${room.depth.toFixed(4)}m, ceiling height (Y) = ${room.height.toFixed(4)}m.`,
@@ -1976,13 +1980,13 @@ export async function replaceObjectInScene(
   });
 
   const systemInstruction = [
-    `You are SpaceStage 3D Mockup Replacement Engine powered by ${PLAN_MODEL_ID}.`,
-    'Interpret the user’s typed or spoken command (or clicked product specification) and return the exact replacement 3D mockup.',
+    `You are a Professional Interior Designer and SpaceStage 3D Add & Replacement Engine powered by ${PLAN_MODEL_ID}.`,
+    'Interpret the user’s typed or spoken command (or drafted design prompt / clicked product specification) to ADD a new 3D furniture piece, REPLACE an existing one, or REMOVE one—always maintaining natural room-proportional dimensions, cohesive materials, and clean circulation.',
     'RULES:',
-    '1. If `selectedObjectId` is set and the command refers to "this", "it", or matches the selected object type, set `targetObjectId` to `selectedObjectId`.',
-    '2. If the user names a specific item in the room (e.g., "replace the wardrobe", "swap the sofa", "change the coffee table"), match the best existing `id` from `sceneObjects`.',
-    '3. For `replacement.label`, ALWAYS include the requested color/material AND a specific style+furniture noun from our 28-model GLB catalog: Modern Sofa, Minimalist Boucle Sofa, Tufted Classic Sofa, Daybed, Modern Armchair, Mid-Century Lounge Chair, Classic Wingback Armchair, Ottoman, Wooden Bench, Bar Stool, Wardrobe, Dresser, Nightstand, Wooden Cabinet, Bookshelf, Wooden Display Shelf, Steel Rack, Round Coffee Table, Coffee Table, Dining Table, Console Table, Side Table, Bed, Desk Lamp, Floor Lamp, Potted Plant, Wall Mirror, Checkout Counter.',
-    '4. Choose realistic physical dimensions `size: [width, height, depth]` in meters (e.g., 3-seat sofa ~ [2.1, 0.82, 0.92], accent chair ~ [0.82, 0.85, 0.82], coffee table ~ [1.1, 0.45, 0.6], wardrobe/cabinet ~ [1.1, 1.9, 0.55], display shelf ~ [1.0, 1.8, 0.4], floor lamp ~ [0.42, 1.65, 0.42], plant ~ [0.55, 1.25, 0.55]).',
+    '1. ADD INTENT: If the user says "add", "place", "put", "insert", "bring in", or "new" (e.g., "add a round walnut table", "add a floor lamp in the corner", "put a cream sofa"), ALWAYS set `action: "add"`, set `targetObjectId: null`, leave all existing objects untouched, and pick an open, collision-free floor `position: [x, 0, z]` inside `room` bounds that does not overlap any item in `sceneObjects` and keeps clear of the room entrance.',
+    '2. REPLACE INTENT: If the user says "replace", "swap", "change", or "turn into", set `action: "replace"`. If `selectedObjectId` is set and the command refers to "this", "it", or matches the selected object type, set `targetObjectId` to `selectedObjectId`. Otherwise match the best existing `id` from `sceneObjects`.',
+    '3. For `replacement.label`, ALWAYS include the requested color/material AND a specific style+furniture noun from our 46-model GLB catalog: Modern Sofa, Minimalist Boucle Sofa, Tufted Classic Sofa, Wooden Sofa, Daybed, Modern Armchair, Mid-Century Lounge Chair, Classic Wingback Armchair, Dining Chair, Office Chair, Accent Chair, Ottoman, Wooden Bench, Bar Stool, Wardrobe, Dresser, Nightstand, Wooden Cabinet, Bookshelf, Wooden Display Shelf, Steel Rack, Round Coffee Table, Round End Table, Round Side Table, Coffee Table, Dining Table, Console Table, Side Table, Desk, Bed, Desk Lamp, Floor Lamp, Potted Plant, Wall Mirror, Checkout Counter.',
+    '4. Choose realistic physical dimensions `size: [width, height, depth]` in meters (e.g., 3-seat sofa ~ [2.1, 0.82, 0.92], accent chair ~ [0.82, 0.85, 0.82], coffee table ~ [1.1, 0.45, 0.6], round end table ~ [0.6, 0.62, 0.6], wardrobe/cabinet ~ [1.1, 1.9, 0.55], display shelf ~ [1.0, 1.8, 0.4], floor lamp ~ [0.42, 1.65, 0.42], plant ~ [0.55, 1.25, 0.55]).',
     '5. Keep `position[1] = 0` for floor-standing items. For `action: "replace"`, preserve the target object’s position and rotationY unless nudging slightly inside room bounds.',
   ].join('\n');
 
@@ -2148,9 +2152,16 @@ export async function replaceObjectInScene(
       updatedObject = candidateObj;
     }
 
+    const normalizedObjects = deduplicateSceneObjects(
+      nextObjects.map((o) => ({
+        ...o,
+        size: normalizeObjectSizeForRoom(o.size, o.kind, scene.room, o.label),
+      }))
+    );
+
     const nextScene = ShopSceneSchema.parse({
       ...scene,
-      objects: nextObjects,
+      objects: normalizedObjects,
     });
 
     const validation = evaluateScene(nextScene);

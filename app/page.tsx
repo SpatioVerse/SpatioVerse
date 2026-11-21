@@ -38,6 +38,10 @@ import { VoiceRoomControl } from '@/components/VoiceRoomControl';
 import { validateScene } from '@/lib/constraints';
 import { computeReplacementPatch } from '@/lib/productVisuals';
 import {
+  deduplicateSceneObjects,
+  normalizeObjectSizeForRoom,
+} from '@/lib/roomProportions';
+import {
   FT_TO_METERS,
   type ConstraintIssue,
   type ProductRef,
@@ -320,6 +324,9 @@ export default function HomePage() {
   const intakeOpen = useSceneStore((state) => state.intakeOpen);
   const wizardOpen = useSceneStore((state) => state.wizardOpen);
   const rightPanelTab = useSceneStore((state) => state.rightPanelTab);
+  const shopDrawerRequestedEpoch = useSceneStore(
+    (state) => state.shopDrawerRequestedEpoch
+  );
   const aiTrace = useSceneStore((state) => state.aiTrace);
   const lastMediaSource = useSceneStore((state) => state.lastMediaSource);
 
@@ -341,6 +348,7 @@ export default function HomePage() {
   // Null = default responsive (open on desktop >=768px, closed on mobile)
   const [inventoryPref, setInventoryPref] = useState<boolean | null>(null);
   const [drawerPinnedOpen, setDrawerPinnedOpen] = useState(false);
+  const [dismissedShopEpoch, setDismissedShopEpoch] = useState(0);
   const [dismissedInspectorId, setDismissedInspectorId] = useState<
     string | null
   >(null);
@@ -392,18 +400,22 @@ export default function HomePage() {
     [scene.objects, selectedId]
   );
 
-  // Right Studio Drawer opens when pinned (e.g. Shop / Review Purchases / Toolbar toggle)
+  // Right Studio Drawer opens when pinned (e.g. Shop / Review Purchases / Toolbar toggle),
+  // when voice requests browsing/ordering Shopify products,
   // or whenever an object is selected in Orbit mode unless explicitly dismissed.
+  const voiceShopDrawerOpen = shopDrawerRequestedEpoch > dismissedShopEpoch;
   const rightDrawerOpen =
-    !isWalkthrough &&
-    (drawerPinnedOpen ||
-      (selectedObject !== null && dismissedInspectorId !== selectedObject.id));
+    voiceShopDrawerOpen ||
+    (!isWalkthrough &&
+      (drawerPinnedOpen ||
+        (selectedObject !== null && dismissedInspectorId !== selectedObject.id)));
 
   const handleCloseRightDrawer = useCallback(() => {
     setDrawerPinnedOpen(false);
+    setDismissedShopEpoch(shopDrawerRequestedEpoch);
     setDismissedInspectorId(selectedId);
     setRightPanelTab('inspect');
-  }, [selectedId, setRightPanelTab]);
+  }, [selectedId, setRightPanelTab, shopDrawerRequestedEpoch]);
 
   const handleToggleInventory = useCallback(() => {
     if (isWalkthrough) {
@@ -525,7 +537,16 @@ export default function HomePage() {
       const currentObj = scene.objects.find((obj) => obj.id === objectId);
       if (!currentObj) return;
       const patch = computeReplacementPatch(currentObj, product, verifiedSize);
-      updateObject(objectId, patch);
+      const nextKind = patch.kind ?? currentObj.kind;
+      const nextSize = verifiedSize
+        ? verifiedSize
+        : normalizeObjectSizeForRoom(
+            (patch.size as Vec3 | undefined) ?? currentObj.size,
+            nextKind,
+            scene.room,
+            product.title
+          );
+      updateObject(objectId, { ...patch, size: nextSize });
       selectObject(objectId);
 
       // Vision-based product photo -> closest 3D GLB + sampled color match
@@ -571,7 +592,150 @@ export default function HomePage() {
         setSwapToast(null);
       }, 4200);
     },
-    [scene.objects, updateObject, selectObject]
+    [scene.objects, scene.room, updateObject, selectObject]
+  );
+
+  const handleAddObjectProduct = useCallback(
+    (product: ProductRef, verifiedSize?: Vec3) => {
+      // Deduplicate: if this exact Shopify product is already in the room, select it cleanly
+      const existingSame = scene.objects.find(
+        (obj) => obj.product?.productId === product.productId
+      );
+      if (existingSame) {
+        selectObject(existingSame.id);
+        setSwapToast({
+          objectId: existingSame.id,
+          title: `Already in room: ${product.title}`,
+          seller: product.seller,
+          price: formatCents(product.priceCents, product.currency),
+        });
+        return;
+      }
+
+      const templateObj: SceneObject = {
+        id: `shopify-${Date.now()}`,
+        kind: 'table',
+        label: product.title,
+        source: 'shopify',
+        position: [0, 0, 0],
+        size: [1.0, 0.85, 0.7],
+        rotationY: 0,
+        dimensionsVerified: Boolean(verifiedSize),
+      };
+      const patch = computeReplacementPatch(templateObj, product, verifiedSize);
+      const nextKind = patch.kind ?? templateObj.kind;
+      const rawSize: Vec3 = (patch.size as Vec3 | undefined) ?? templateObj.size;
+      const nextSize: Vec3 = verifiedSize
+        ? rawSize
+        : normalizeObjectSizeForRoom(rawSize, nextKind, scene.room, product.title);
+
+      // Pick an open collision-free floor position inside room bounds
+      const halfW = Math.max(0.4, scene.room.width / 2 - nextSize[0] / 2 - 0.2);
+      const halfD = Math.max(0.4, scene.room.depth / 2 - nextSize[2] / 2 - 0.2);
+      const candidates: Array<[number, number]> = [[0, 0]];
+      const step = 0.45;
+      for (let r = step; r <= Math.max(halfW, halfD); r += step) {
+        candidates.push(
+          [r, 0],
+          [-r, 0],
+          [0, r],
+          [0, -r],
+          [r, r],
+          [-r, r],
+          [r, -r],
+          [-r, -r]
+        );
+      }
+
+      const isFree = (cx: number, cz: number) => {
+        if (Math.abs(cx) > halfW || Math.abs(cz) > halfD) return false;
+        const pad = 0.12;
+        for (const obj of scene.objects) {
+          const dx = Math.abs(cx - obj.position[0]);
+          const dz = Math.abs(cz - obj.position[2]);
+          const minX = (nextSize[0] + obj.size[0]) / 2 + pad;
+          const minZ = (nextSize[2] + obj.size[2]) / 2 + pad;
+          if (dx < minX && dz < minZ) return false;
+        }
+        return true;
+      };
+
+      let bestPos: Vec3 = [0, 0, 0];
+      for (const [cx, cz] of candidates) {
+        if (isFree(cx, cz)) {
+          bestPos = [Number(cx.toFixed(2)), 0, Number(cz.toFixed(2))];
+          break;
+        }
+      }
+
+      const newObj: SceneObject = {
+        ...templateObj,
+        ...patch,
+        id: templateObj.id,
+        kind: nextKind,
+        label: product.title,
+        source: 'shopify',
+        product,
+        position: bestPos,
+        size: nextSize,
+        rotationY: 0,
+        dimensionsVerified: Boolean(verifiedSize),
+      };
+
+      setScene({
+        ...scene,
+        objects: deduplicateSceneObjects([...scene.objects, newObj]),
+      });
+      selectObject(newObj.id);
+
+      // Vision + Decisions API (gemini-decision-1 + gemini-4-hydrogen) photo -> closest 3D GLB match
+      const { setVisionModelOverride } = useSceneStore.getState();
+      setVisionModelOverride(newObj.id, null);
+      void fetch('/api/match-model', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: product.title,
+          imageUrl: product.imageUrl,
+        }),
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((match) => {
+          if (!match || typeof match.glbKey !== 'string') return;
+          setVisionModelOverride(newObj.id, {
+            glbKey: match.glbKey,
+            dominantColorHex: match.dominantColorHex,
+            overrideAlbedo: Boolean(match.overrideAlbedo),
+          });
+          if (
+            !verifiedSize &&
+            Array.isArray(match.estimatedSize) &&
+            match.estimatedSize.length === 3
+          ) {
+            updateObject(newObj.id, {
+              kind: match.inferredKind ?? nextKind,
+              size: match.estimatedSize as Vec3,
+            });
+          }
+        })
+        .catch(() => {
+          // Graceful fallback: keep deterministic catalog match
+        });
+
+      setSwapToast({
+        objectId: newObj.id,
+        title: `Added: ${product.title}`,
+        seller: product.seller,
+        price: formatCents(product.priceCents, product.currency),
+      });
+      if (swapToastTimerRef.current) {
+        clearTimeout(swapToastTimerRef.current);
+      }
+      swapToastTimerRef.current = setTimeout(() => {
+        setSwapToast(null);
+      }, 4200);
+    },
+    [scene, setScene, selectObject, updateObject]
   );
 
   const handleWizardScenePlanned = useCallback(
@@ -1206,6 +1370,7 @@ export default function HomePage() {
                 selectedObject={selectedObject}
                 scene={scene}
                 onReplaceObjectProduct={handleReplaceObjectProduct}
+                onAddObjectProduct={handleAddObjectProduct}
               />
             </div>
           )}
@@ -1441,7 +1606,11 @@ export default function HomePage() {
       )}
 
       {/* Live Multilingual Voice-Editing Control */}
-      <VoiceRoomControl />
+      <VoiceRoomControl
+        rightOffsetPx={
+          rightDrawerOpen ? (rightPanelTab === 'shop' ? 404 : 316) : 0
+        }
+      />
 
       {/* Multimodal Media Intake Modal */}
       <MediaIntakeModal />

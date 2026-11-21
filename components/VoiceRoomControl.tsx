@@ -25,7 +25,7 @@ import type { LayoutOption } from '@/lib/layoutSuggestions';
 import type { ShopScene } from '@/lib/schema';
 import type { VoiceCommandResponse } from '@/lib/voiceActions';
 import {
-  executeVoiceAction,
+  executeVoiceActionAsync,
   type ActionExecutionResult,
 } from '@/lib/voiceExecutor';
 import {
@@ -133,7 +133,12 @@ function LayoutThumbnail({
   );
 }
 
-export function VoiceRoomControl() {
+export interface VoiceRoomControlProps {
+  /** Horizontal offset in px when the right-hand Shop/Inspect drawer is open so they never overlap */
+  rightOffsetPx?: number;
+}
+
+export function VoiceRoomControl({ rightOffsetPx = 0 }: VoiceRoomControlProps = {}) {
   const scene = useSceneStore((state) => state.scene);
   const selectedId = useSceneStore((state) => state.selectedId);
   const isDragging = useSceneStore((state) => state.isDragging);
@@ -143,6 +148,11 @@ export function VoiceRoomControl() {
   const proactiveSuggestion = useSceneStore((state) => state.proactiveSuggestion);
   const proactiveTick = useSceneStore((state) => state.proactiveTick);
   const undoCount = useSceneStore((state) => state.undoStack.length);
+  const draftedDesignPrompt = useSceneStore((state) => state.draftedDesignPrompt);
+  const isRenderingPrompt = useSceneStore((state) => state.isRenderingPrompt);
+  const setDraftedDesignPrompt = useSceneStore(
+    (state) => state.setDraftedDesignPrompt
+  );
 
   const freezeVoicePreview = useSceneStore((state) => state.freezeVoicePreview);
   const previewSuggestedAlternative = useSceneStore(
@@ -400,7 +410,7 @@ export function VoiceRoomControl() {
 
         let lastResult: ActionExecutionResult | null = null;
         for (const action of data.actions ?? []) {
-          const result = executeVoiceAction(action, capturedEpoch);
+          const result = await executeVoiceActionAsync(action, capturedEpoch);
           if (result.updatedPreferredLanguage) {
             setPreferredLanguage(result.updatedPreferredLanguage);
           }
@@ -455,6 +465,7 @@ export function VoiceRoomControl() {
   const panelExpanded =
     isSessionActive ||
     Boolean(voicePreview) ||
+    Boolean(draftedDesignPrompt) ||
     layoutOptions.length > 0 ||
     Boolean(proactiveSuggestion) ||
     voiceHighlightIds.length > 0 ||
@@ -463,7 +474,10 @@ export function VoiceRoomControl() {
     Boolean(roomReply);
 
   return (
-    <div className="pointer-events-none fixed bottom-14 right-3 z-30 flex flex-col items-end gap-2 sm:bottom-4 sm:right-4">
+    <div
+      style={rightOffsetPx > 0 ? { right: `${rightOffsetPx}px` } : undefined}
+      className="pointer-events-none fixed bottom-14 right-3 z-30 flex flex-col items-end gap-2 transition-[right] duration-200 sm:bottom-4 sm:right-4"
+    >
       {/* Live Understanding, Preview Controls & Multilingual Typed Bar */}
       {panelExpanded && (
         <div className="pointer-events-auto w-[320px] max-w-[92vw] overflow-hidden rounded-2xl border border-white/14 bg-zinc-950/88 text-zinc-100 shadow-[0_20px_60px_rgba(0,0,0,0.62)] backdrop-blur-xl">
@@ -599,6 +613,65 @@ export function VoiceRoomControl() {
               <div className="rounded-xl border border-purple-400/35 bg-purple-500/15 px-2.5 py-2 text-[11px] text-purple-100">
                 Highlighted {voiceHighlightIds.length} matching fixtures in
                 violet — click one or specify which one.
+              </div>
+            )}
+
+            {/* Drafted Design Prompt Card (Prompt-First Agent Step) */}
+            {draftedDesignPrompt && (
+              <div className="space-y-2 rounded-xl border border-amber-300/40 bg-amber-950/35 p-2.5">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-200">
+                      <Sparkles className="h-3.5 w-3.5 shrink-0 text-amber-300" />
+                      <span>
+                        Drafted Prompt ({draftedDesignPrompt.mode})
+                      </span>
+                    </div>
+                    <p className="mt-1 text-[11px] leading-snug text-zinc-100">
+                      &ldquo;{draftedDesignPrompt.prompt}&rdquo;
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={isRenderingPrompt}
+                    onClick={() => setDraftedDesignPrompt(null)}
+                    aria-label="Dismiss drafted prompt"
+                    className="flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-zinc-400 hover:bg-white/10 hover:text-white disabled:opacity-40"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={isRenderingPrompt}
+                    onClick={() => {
+                      void executeVoiceActionAsync({
+                        type: 'render_from_prompt',
+                      }).then((res) => {
+                        setLastActionNote(res.summary);
+                      });
+                    }}
+                    className="inline-flex cursor-pointer items-center gap-1 rounded-lg bg-amber-300 px-2.5 py-1 text-[11px] font-semibold text-zinc-950 hover:bg-amber-200 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {isRenderingPrompt ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <Check className="h-3 w-3" />
+                    )}
+                    <span>
+                      {isRenderingPrompt ? 'Rendering…' : 'Render 3D'}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isRenderingPrompt}
+                    onClick={() => setDraftedDesignPrompt(null)}
+                    className="cursor-pointer rounded-lg border border-white/12 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10 disabled:opacity-40"
+                  >
+                    Cancel
+                  </button>
+                </div>
               </div>
             )}
 

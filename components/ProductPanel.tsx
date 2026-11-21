@@ -34,6 +34,7 @@ import type {
   ShopScene,
   Vec3,
 } from "@/lib/schema";
+import { useSceneStore } from "@/store/useSceneStore";
 
 export interface CartHandoffEntry {
   seller: string;
@@ -66,6 +67,8 @@ export interface ProductPanelProps {
     product: ProductRef,
     verifiedSize?: Vec3
   ) => void;
+  /** Called when the user clicks "Add" to insert the chosen real variant as a new 3D object. */
+  onAddObjectProduct?: (product: ProductRef, verifiedSize?: Vec3) => void;
   /** Optional controlled products list; if omitted, ProductPanel fetches live from /api/products. */
   products?: ProductRef[];
   /** Optional controlled loading state (used when `products` is passed externally). */
@@ -118,6 +121,7 @@ export function ProductPanel({
   selectedObject,
   scene,
   onReplaceObjectProduct,
+  onAddObjectProduct,
   products: controlledProducts,
   loading: controlledLoading,
   error: controlledError,
@@ -127,6 +131,10 @@ export function ProductPanel({
 }: ProductPanelProps) {
   const isControlledProducts = controlledProducts !== undefined;
 
+  const voiceShopQuery = useSceneStore((s) => s.voiceShopQuery);
+  const voiceShopProducts = useSceneStore((s) => s.voiceShopProducts);
+  const voiceOrderResult = useSceneStore((s) => s.voiceOrderResult);
+
   const [customQuery, setCustomQuery] = useState<string | null>(null);
   const [fetchedProducts, setFetchedProducts] = useState<ProductRef[]>([]);
   const [fetchedWarnings, setFetchedWarnings] = useState<string[]>([]);
@@ -134,7 +142,10 @@ export function ProductPanel({
   const [internalError, setInternalError] = useState<string | null>(null);
 
   const selectedKind = selectedObject?.kind;
-  const query = customQuery ?? (selectedKind ? KIND_TO_DEFAULT_QUERY[selectedKind] : "");
+  const query =
+    customQuery ??
+    voiceShopQuery ??
+    (selectedKind ? KIND_TO_DEFAULT_QUERY[selectedKind] : "");
 
   const [selectedVariantByProduct, setSelectedVariantByProduct] = useState<Record<string, string>>(
     {}
@@ -238,10 +249,15 @@ export function ProductPanel({
     };
   }, [isControlledProducts, scene.budgetCents, selectedKind]);
 
-  const activeProducts = controlledProducts ?? fetchedProducts;
+  const activeProducts =
+    controlledProducts ??
+    (customQuery === null && voiceShopProducts.length > 0
+      ? voiceShopProducts
+      : fetchedProducts);
   const isLoading = controlledLoading ?? internalLoading;
   const activeError = controlledError !== undefined ? controlledError : internalError;
-  const activeCartResult = controlledCartResult ?? internalCartResult;
+  const activeCartResult =
+    controlledCartResult ?? internalCartResult ?? voiceOrderResult;
 
   const groupedProducts = useMemo<ProductGroup[]>(() => {
     const map = new Map<string, ProductRef[]>();
@@ -506,7 +522,7 @@ export function ProductPanel({
 
         {!isLoading &&
           !activeError &&
-          groupedProducts.map(({ productId, variants }) => {
+          groupedProducts.map(({ productId, variants }, groupIdx) => {
             const activeVariantId =
               selectedVariantByProduct[productId] ?? variants[0]?.variantId;
             const activeVariant =
@@ -521,8 +537,11 @@ export function ProductPanel({
             return (
               <article
                 key={productId}
-                className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 transition hover:border-zinc-700"
+                className="relative rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 transition hover:border-zinc-700"
               >
+                <span className="absolute -top-2 -left-1.5 rounded-md border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300 shadow">
+                  #{groupIdx + 1}
+                </span>
                 <div className="flex gap-3">
                   <div className="h-18 w-18 flex-shrink-0 overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950">
                     {showImage ? (
@@ -628,6 +647,18 @@ export function ProductPanel({
                   >
                     Replace in 3D scene
                   </button>
+
+                  {onAddObjectProduct && (
+                    <button
+                      type="button"
+                      disabled={!isAvailable}
+                      onClick={() => onAddObjectProduct(activeVariant)}
+                      title="Add this product as a new item in the 3D room"
+                      className="rounded-lg bg-emerald-400 px-3 py-1.5 text-xs font-semibold text-zinc-950 hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      + Add
+                    </button>
+                  )}
                 </div>
 
                 {variantErrorByProduct[productId] && (
