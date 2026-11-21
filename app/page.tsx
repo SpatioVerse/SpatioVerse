@@ -1,9 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import {
   AlertTriangle,
+  ArrowRight,
   Box,
   Camera,
   CheckCircle2,
@@ -15,22 +16,33 @@ import {
   Link2,
   Lock,
   Navigation,
+  RefreshCw,
   RotateCw,
   ShieldCheck,
+  ShoppingBag,
+  SlidersHorizontal,
+  Sparkles,
   Trash2,
+  Unlink,
   Unlock,
   Video,
   X,
 } from 'lucide-react';
 import type { WalkerPose } from '@/components/FirstPersonRig';
 import { MediaIntakeModal } from '@/components/MediaIntakeModal';
+import { ProductPanel } from '@/components/ProductPanel';
 import { SceneToolbar } from '@/components/SceneToolbar';
+import { SetupWizard } from '@/components/SetupWizard';
 import { VoiceRoomControl } from '@/components/VoiceRoomControl';
+import { validateScene } from '@/lib/constraints';
+import { computeReplacementPatch } from '@/lib/productVisuals';
 import {
   FT_TO_METERS,
   type ConstraintIssue,
+  type ProductRef,
   type SceneObject,
   type ShopScene,
+  type Vec3,
 } from '@/lib/schema';
 import { useSceneStore } from '@/store/useSceneStore';
 
@@ -235,6 +247,8 @@ function FixtureListItem({
   hasWarning: boolean;
   onSelect: () => void;
 }) {
+  const isShopifyLinked = obj.source === 'shopify' && Boolean(obj.product);
+
   return (
     <button
       type="button"
@@ -250,7 +264,17 @@ function FixtureListItem({
           <span className="truncate text-xs font-medium leading-snug">
             {obj.label}
           </span>
+          {isShopifyLinked && (
+            <span className="shrink-0 rounded-md border border-emerald-400/35 bg-emerald-500/18 px-1.5 py-0.5 text-[9px] font-semibold leading-none tracking-tight text-emerald-200">
+              Shopify
+            </span>
+          )}
         </div>
+        {isShopifyLinked && obj.product && (
+          <div className="mt-0.5 truncate text-[10px] leading-snug text-emerald-200/80">
+            {obj.product.title}
+          </div>
+        )}
         <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-zinc-400">
           <span className="capitalize">{obj.kind}</span>
           <span>·</span>
@@ -260,7 +284,7 @@ function FixtureListItem({
           {obj.source === 'owned' ? (
             <span className="text-emerald-300/90">· $0</span>
           ) : obj.product ? (
-            <span className="text-amber-200">
+            <span className="font-semibold text-emerald-300">
               · {formatCents(obj.product.priceCents, obj.product.currency)}
             </span>
           ) : null}
@@ -293,21 +317,33 @@ export default function HomePage() {
   const cameraMode = useSceneStore((state) => state.cameraMode);
   const issues = useSceneStore((state) => state.issues);
   const intakeOpen = useSceneStore((state) => state.intakeOpen);
+  const wizardOpen = useSceneStore((state) => state.wizardOpen);
+  const rightPanelTab = useSceneStore((state) => state.rightPanelTab);
+  const aiTrace = useSceneStore((state) => state.aiTrace);
   const lastMediaSource = useSceneStore((state) => state.lastMediaSource);
 
   const hydrateFromStorage = useSceneStore((state) => state.hydrateFromStorage);
+  const setValidator = useSceneStore((state) => state.setValidator);
+  const setScene = useSceneStore((state) => state.setScene);
   const selectObject = useSceneStore((state) => state.selectObject);
   const setCameraMode = useSceneStore((state) => state.setCameraMode);
   const rotateObject = useSceneStore((state) => state.rotateObject);
   const toggleLock = useSceneStore((state) => state.toggleLock);
+  const updateObject = useSceneStore((state) => state.updateObject);
+  const clearObjectProduct = useSceneStore((state) => state.clearObjectProduct);
   const removeObject = useSceneStore((state) => state.removeObject);
   const setIntakeOpen = useSceneStore((state) => state.setIntakeOpen);
+  const setWizardOpen = useSceneStore((state) => state.setWizardOpen);
+  const setRightPanelTab = useSceneStore((state) => state.setRightPanelTab);
+  const setAiTrace = useSceneStore((state) => state.setAiTrace);
 
   // Null = default responsive (open on desktop >=768px, closed on mobile)
   const [inventoryPref, setInventoryPref] = useState<boolean | null>(null);
+  const [drawerPinnedOpen, setDrawerPinnedOpen] = useState(false);
   const [dismissedInspectorId, setDismissedInspectorId] = useState<
     string | null
   >(null);
+  const [brokenThumbUrl, setBrokenThumbUrl] = useState<string | null>(null);
   const [walkerPose, setWalkerPose] = useState<WalkerPose>(() => ({
     x: scene.room.entrance.offset,
     z: Math.max(0, scene.room.depth * 0.5 - 0.56),
@@ -315,26 +351,34 @@ export default function HomePage() {
     locked: false,
   }));
 
-  // Hydrate persisted scene state once on client mount
+  // Wire Akash's deterministic constraint engine & hydrate persisted scene on client mount
   useEffect(() => {
+    setValidator(validateScene);
     hydrateFromStorage();
-  }, [hydrateFromStorage]);
+  }, [setValidator, hydrateFromStorage]);
 
-  // Escape in Orbit mode clears active fixture selection cleanly
+  // Escape closes SetupWizard or clears active fixture selection in Orbit mode
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (
-        event.key === 'Escape' &&
-        !intakeOpen &&
-        cameraMode === 'orbit' &&
-        selectedId
-      ) {
+      if (event.key !== 'Escape') return;
+      if (wizardOpen) {
+        setWizardOpen(false);
+        return;
+      }
+      if (!intakeOpen && cameraMode === 'orbit' && selectedId) {
         selectObject(null);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [intakeOpen, cameraMode, selectedId, selectObject]);
+  }, [
+    wizardOpen,
+    setWizardOpen,
+    intakeOpen,
+    cameraMode,
+    selectedId,
+    selectObject,
+  ]);
 
   const handleWalkerPose = useCallback((pose: WalkerPose) => {
     setWalkerPose(pose);
@@ -347,12 +391,18 @@ export default function HomePage() {
     [scene.objects, selectedId]
   );
 
-  // Right Inspector automatically opens when an object is selected in Orbit mode,
-  // and hides automatically when nothing is selected or in Walkthrough mode.
-  const inspectorOpen =
+  // Right Studio Drawer opens when pinned (e.g. Shop / Review Purchases / Toolbar toggle)
+  // or whenever an object is selected in Orbit mode unless explicitly dismissed.
+  const rightDrawerOpen =
     !isWalkthrough &&
-    selectedObject !== null &&
-    dismissedInspectorId !== selectedObject.id;
+    (drawerPinnedOpen ||
+      (selectedObject !== null && dismissedInspectorId !== selectedObject.id));
+
+  const handleCloseRightDrawer = useCallback(() => {
+    setDrawerPinnedOpen(false);
+    setDismissedInspectorId(selectedId);
+    setRightPanelTab('inspect');
+  }, [selectedId, setRightPanelTab]);
 
   const handleToggleInventory = useCallback(() => {
     if (isWalkthrough) {
@@ -370,27 +420,80 @@ export default function HomePage() {
   const handleToggleInspector = useCallback(() => {
     if (isWalkthrough) {
       setCameraMode('orbit');
+      setDrawerPinnedOpen(true);
+      setDismissedInspectorId(null);
       if (!selectedId && scene.objects.length > 0) {
         selectObject(scene.objects[0].id);
-        setDismissedInspectorId(null);
-      } else {
-        setDismissedInspectorId(null);
       }
       return;
     }
 
+    if (rightDrawerOpen) {
+      setDrawerPinnedOpen(false);
+      setDismissedInspectorId(selectedId);
+      return;
+    }
+
+    setDrawerPinnedOpen(true);
+    setDismissedInspectorId(null);
+    if (
+      rightPanelTab === 'inspect' &&
+      !selectedId &&
+      scene.objects.length > 0
+    ) {
+      selectObject(scene.objects[0].id);
+    }
+  }, [
+    isWalkthrough,
+    rightDrawerOpen,
+    rightPanelTab,
+    selectedId,
+    scene.objects,
+    selectObject,
+    setCameraMode,
+  ]);
+
+  const handleOpenShop = useCallback(() => {
+    if (!isWalkthrough && rightDrawerOpen && rightPanelTab === 'shop') {
+      setDrawerPinnedOpen(false);
+      setDismissedInspectorId(selectedId ?? '__closed__');
+      return;
+    }
+    if (isWalkthrough) {
+      setCameraMode('orbit');
+    }
     if (!selectedId) {
-      if (scene.objects.length > 0) {
-        selectObject(scene.objects[0].id);
-        setDismissedInspectorId(null);
+      const firstProposed =
+        scene.objects.find((obj) => obj.source === 'proposal') ??
+        scene.objects.find((obj) => obj.source !== 'owned');
+      if (firstProposed) {
+        selectObject(firstProposed.id);
       }
-      return;
     }
+    setRightPanelTab('shop');
+    setDrawerPinnedOpen(true);
+    setDismissedInspectorId(null);
+  }, [
+    isWalkthrough,
+    rightDrawerOpen,
+    rightPanelTab,
+    setCameraMode,
+    selectedId,
+    scene.objects,
+    selectObject,
+    setRightPanelTab,
+  ]);
 
-    setDismissedInspectorId((prev) =>
-      prev === selectedId ? null : selectedId
-    );
-  }, [isWalkthrough, selectedId, scene.objects, selectObject, setCameraMode]);
+  const handleSwitchToShopTab = useCallback(() => {
+    setRightPanelTab('shop');
+    setDrawerPinnedOpen(true);
+    setDismissedInspectorId(null);
+  }, [setRightPanelTab]);
+
+  const handleSwitchToInspectTab = useCallback(() => {
+    setRightPanelTab('inspect');
+    setDismissedInspectorId(null);
+  }, [setRightPanelTab]);
 
   const handleSelectFixture = useCallback(
     (id: string) => {
@@ -400,9 +503,67 @@ export default function HomePage() {
     [selectObject]
   );
 
+  const [swapToast, setSwapToast] = useState<{
+    objectId: string;
+    title: string;
+    seller: string;
+    price: string;
+  } | null>(null);
+  const swapToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (swapToastTimerRef.current) {
+        clearTimeout(swapToastTimerRef.current);
+      }
+    };
+  }, []);
+
+  const handleReplaceObjectProduct = useCallback(
+    (objectId: string, product: ProductRef, verifiedSize?: Vec3) => {
+      const currentObj = scene.objects.find((obj) => obj.id === objectId);
+      if (!currentObj) return;
+      const patch = computeReplacementPatch(currentObj, product, verifiedSize);
+      updateObject(objectId, patch);
+      selectObject(objectId);
+      setSwapToast({
+        objectId,
+        title: product.title,
+        seller: product.seller,
+        price: formatCents(product.priceCents, product.currency),
+      });
+      if (swapToastTimerRef.current) {
+        clearTimeout(swapToastTimerRef.current);
+      }
+      swapToastTimerRef.current = setTimeout(() => {
+        setSwapToast(null);
+      }, 4200);
+    },
+    [scene.objects, updateObject, selectObject]
+  );
+
+  const handleWizardScenePlanned = useCallback(
+    (nextScene: ShopScene) => {
+      setScene(nextScene);
+      const isFallback = nextScene.warnings.some((warning) =>
+        /without ai|offline|fallback|local/i.test(warning)
+      );
+      setAiTrace({
+        analyzeModel: isFallback ? undefined : 'gemini-4-neon',
+        planModel: isFallback ? undefined : 'gemini-4-hydrogen',
+        warnings: nextScene.warnings,
+        mode: isFallback ? 'local-fallback' : 'live-gemini',
+        updatedAt: new Date().toISOString(),
+      });
+      setWizardOpen(false);
+    },
+    [setScene, setAiTrace, setWizardOpen]
+  );
+
   const {
     ownedObjects,
     proposedObjects,
+    shopifyObjects,
     errorIssues,
     errorIds,
     warningIds,
@@ -410,6 +571,7 @@ export default function HomePage() {
   } = useMemo(() => {
     const owned: SceneObject[] = [];
     const proposed: SceneObject[] = [];
+    const shopify: SceneObject[] = [];
     let spent = 0;
 
     for (const obj of scene.objects) {
@@ -418,7 +580,10 @@ export default function HomePage() {
       } else {
         proposed.push(obj);
         if (obj.product) {
-          spent += obj.product.priceCents;
+          spent += Math.round(obj.product.priceCents);
+          if (obj.source === 'shopify') {
+            shopify.push(obj);
+          }
         }
       }
     }
@@ -439,6 +604,7 @@ export default function HomePage() {
     return {
       ownedObjects: owned,
       proposedObjects: proposed,
+      shopifyObjects: shopify,
       errorIssues: errors,
       errorIds: errSet,
       warningIds: warnSet,
@@ -462,16 +628,52 @@ export default function HomePage() {
     <main className="relative h-screen w-screen overflow-hidden bg-zinc-950 font-sans text-zinc-100">
       {/* Full-Bleed 3D Boutique Viewport (100% of h-screen w-screen) */}
       <div className="absolute inset-0">
-        <SpaceCanvas onWalkerPose={handleWalkerPose} />
+        <SpaceCanvas validator={validateScene} onWalkerPose={handleWalkerPose} />
       </div>
 
       {/* Floating Glass Top HUD Toolbar */}
       <SceneToolbar
         inventoryOpen={toolbarInventoryActive}
         onToggleInventory={handleToggleInventory}
-        inspectorOpen={inspectorOpen}
+        inspectorOpen={rightDrawerOpen}
         onToggleInspector={handleToggleInspector}
+        onOpenShop={handleOpenShop}
       />
+
+      {/* Instant 3D Replacement Confirmation Toast */}
+      {swapToast && !isWalkthrough && (
+        <div
+          role="status"
+          data-testid="swap-confirmation-toast"
+          className="pointer-events-auto fixed left-1/2 top-[70px] z-30 flex max-w-[min(520px,90vw)] -translate-x-1/2 items-center gap-2.5 rounded-2xl border border-emerald-400/45 bg-emerald-950/92 px-3.5 py-2 text-xs text-emerald-50 shadow-[0_14px_40px_rgba(6,78,59,0.55)] backdrop-blur-xl"
+        >
+          <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-300" />
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+            <span className="shrink-0 font-semibold text-emerald-200">Replaced in 3D:</span>
+            <span className="truncate font-medium text-white">{swapToast.title}</span>
+            <span className="shrink-0 font-semibold text-amber-200">({swapToast.price})</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              selectObject(swapToast.objectId);
+              setRightPanelTab('inspect');
+              setSwapToast(null);
+            }}
+            className="shrink-0 cursor-pointer rounded-lg border border-emerald-300/35 bg-emerald-400/20 px-2.5 py-1 text-[11px] font-semibold text-emerald-100 hover:bg-emerald-400/30"
+          >
+            Inspect
+          </button>
+          <button
+            type="button"
+            aria-label="Dismiss replacement confirmation"
+            onClick={() => setSwapToast(null)}
+            className="shrink-0 cursor-pointer text-emerald-200/70 hover:text-white"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Collapsible Floating Left Inventory & Space Drawer */}
       {(showInventoryDesktopDefault || showInventoryForcedOpen) && (
@@ -587,234 +789,395 @@ export default function HomePage() {
         </aside>
       )}
 
-      {/* Collapsible Floating Right Fixture Inspector Drawer */}
-      {inspectorOpen && selectedObject && (
-        <aside
-          aria-label="Selected Fixture Inspector"
-          className="pointer-events-auto fixed bottom-16 right-3 top-[68px] z-20 flex w-[280px] flex-col overflow-hidden rounded-2xl border border-white/12 bg-zinc-950/80 shadow-[0_18px_50px_rgba(0,0,0,0.52)] backdrop-blur-xl"
+      {/* Collapsible Floating Right Studio Drawer (Inspect + Live Shopify Shop & Cart) */}
+      {rightDrawerOpen && (
+        <section
+          aria-label="Studio Inspector and Shopify Commerce Drawer"
+          className={`pointer-events-auto fixed bottom-16 right-3 top-[68px] z-20 flex flex-col overflow-hidden rounded-2xl border border-white/12 bg-zinc-950/84 shadow-[0_18px_50px_rgba(0,0,0,0.55)] backdrop-blur-xl transition-[width] duration-200 ${
+            rightPanelTab === 'shop'
+              ? 'w-[380px] max-w-[calc(100vw-24px)]'
+              : 'w-[292px] max-w-[calc(100vw-24px)]'
+          }`}
         >
-          {/* Inspector Header */}
-          <div className="flex items-start justify-between gap-2 border-b border-white/10 px-4 py-3">
-            <div className="min-w-0">
-              <div className="flex items-center gap-1.5">
-                <span className="rounded-md bg-white/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-200">
-                  {selectedObject.kind}
-                </span>
-                <span className="rounded-md bg-white/6 px-1.5 py-0.5 text-[10px] font-medium capitalize text-zinc-300">
-                  {selectedObject.source}
-                </span>
-              </div>
-              <h2 className="mt-1.5 text-sm font-semibold leading-snug text-white">
-                {selectedObject.label}
-              </h2>
+          {/* 2-Tab Segmented Drawer Header */}
+          <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/10 px-3 py-2.5">
+            <div
+              role="tablist"
+              aria-label="Studio Right Panel Tabs"
+              className="grid flex-1 grid-cols-2 gap-1 rounded-xl bg-white/6 p-0.5"
+            >
+              <button
+                type="button"
+                role="tab"
+                data-testid="right-tab-inspect"
+                aria-selected={rightPanelTab === 'inspect'}
+                onClick={handleSwitchToInspectTab}
+                className={`flex cursor-pointer items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-[11px] font-semibold transition-all ${
+                  rightPanelTab === 'inspect'
+                    ? 'bg-white text-zinc-950 shadow-sm'
+                    : 'text-zinc-300 hover:bg-white/8 hover:text-white'
+                }`}
+              >
+                <SlidersHorizontal className="h-3.5 w-3.5" />
+                <span>Inspect</span>
+              </button>
+
+              <button
+                type="button"
+                role="tab"
+                data-testid="right-tab-shop"
+                aria-selected={rightPanelTab === 'shop'}
+                onClick={handleSwitchToShopTab}
+                className={`flex cursor-pointer items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-[11px] font-semibold transition-all ${
+                  rightPanelTab === 'shop'
+                    ? 'bg-gradient-to-r from-emerald-300 to-amber-200 text-zinc-950 shadow-sm'
+                    : 'text-zinc-300 hover:bg-white/8 hover:text-white'
+                }`}
+              >
+                <ShoppingBag className="h-3.5 w-3.5" />
+                <span>Shop &amp; Cart</span>
+                {shopifyObjects.length > 0 && (
+                  <span
+                    className={`rounded-full px-1.5 py-0.5 text-[9px] font-bold leading-none ${
+                      rightPanelTab === 'shop'
+                        ? 'bg-zinc-950/20 text-zinc-950'
+                        : 'bg-emerald-500/25 text-emerald-200'
+                    }`}
+                  >
+                    {shopifyObjects.length}
+                  </span>
+                )}
+              </button>
             </div>
+
             <button
               type="button"
-              onClick={() => setDismissedInspectorId(selectedObject.id)}
+              onClick={handleCloseRightDrawer}
               aria-label="Close Fixture Inspector"
-              className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-lg text-zinc-400 transition-colors hover:bg-white/10 hover:text-white"
+              className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-lg text-zinc-400 transition-colors hover:bg-white/10 hover:text-white"
             >
               <X className="h-4 w-4" />
             </button>
           </div>
 
-          <div className="flex-1 space-y-4 overflow-y-auto px-4 py-3.5">
-            {/* Quick Fixture Actions */}
-            <div className="grid grid-cols-3 gap-1.5">
-              <button
-                type="button"
-                disabled={Boolean(selectedObject.locked)}
-                onClick={() => rotateObject(selectedObject.id, Math.PI / 2)}
-                className="flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border border-white/10 bg-white/[0.05] px-2 py-2 text-[11px] font-medium text-zinc-100 transition-colors hover:bg-white/12 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                <RotateCw className="h-3.5 w-3.5 text-amber-300" />
-                <span>Rotate 90°</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => toggleLock(selectedObject.id)}
-                className={`flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border px-2 py-2 text-[11px] font-medium transition-colors ${
-                  selectedObject.locked
-                    ? 'border-amber-300/40 bg-amber-300/15 text-amber-100'
-                    : 'border-white/10 bg-white/[0.05] text-zinc-100 hover:bg-white/12'
-                }`}
-              >
-                {selectedObject.locked ? (
-                  <Lock className="h-3.5 w-3.5 text-amber-300" />
-                ) : (
-                  <Unlock className="h-3.5 w-3.5 text-zinc-300" />
-                )}
-                <span>{selectedObject.locked ? 'Locked' : 'Lock'}</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => removeObject(selectedObject.id)}
-                className="flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border border-red-400/20 bg-red-500/10 px-2 py-2 text-[11px] font-medium text-red-200 transition-colors hover:bg-red-500/20"
-              >
-                <Trash2 className="h-3.5 w-3.5 text-red-300" />
-                <span>Remove</span>
-              </button>
-            </div>
-
-            {/* Dimensions & Verification Badge */}
-            <div className="space-y-2 rounded-xl border border-white/10 bg-white/[0.03] p-3">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
-                  Dimensions
-                </span>
-                {selectedObject.dimensionsVerified ? (
-                  <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/35 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-200">
-                    <ShieldCheck className="h-3 w-3" />
-                    Verified
-                  </span>
-                ) : (
-                  <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/35 bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-200">
-                    <AlertTriangle className="h-3 w-3" />
-                    Approximate
-                  </span>
-                )}
-              </div>
-
-              <div className="grid grid-cols-3 gap-1.5 text-center">
-                <div className="rounded-lg bg-black/30 px-1.5 py-1.5">
-                  <div className="text-[10px] text-zinc-400">Width</div>
-                  <div className="text-xs font-semibold text-white">
-                    {metersToFeet(selectedObject.size[0])} ft
-                  </div>
-                  <div className="text-[10px] text-zinc-500">
-                    {selectedObject.size[0].toFixed(2)} m
-                  </div>
-                </div>
-                <div className="rounded-lg bg-black/30 px-1.5 py-1.5">
-                  <div className="text-[10px] text-zinc-400">Depth</div>
-                  <div className="text-xs font-semibold text-white">
-                    {metersToFeet(selectedObject.size[2])} ft
-                  </div>
-                  <div className="text-[10px] text-zinc-500">
-                    {selectedObject.size[2].toFixed(2)} m
-                  </div>
-                </div>
-                <div className="rounded-lg bg-black/30 px-1.5 py-1.5">
-                  <div className="text-[10px] text-zinc-400">Height</div>
-                  <div className="text-xs font-semibold text-white">
-                    {metersToFeet(selectedObject.size[1])} ft
-                  </div>
-                  <div className="text-[10px] text-zinc-500">
-                    {selectedObject.size[1].toFixed(2)} m
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between pt-1 text-[11px] text-zinc-400">
-                <span>
-                  Pos: ({metersToFeet(selectedObject.position[0])},{' '}
-                  {metersToFeet(selectedObject.position[2])}) ft
-                </span>
-                <span>Yaw: {normalizeDeg(selectedObject.rotationY)}°</span>
-              </div>
-            </div>
-
-            {/* Sourcing & Budget Section (Strictly Truthful) */}
-            <div className="space-y-2 rounded-xl border border-white/10 bg-white/[0.03] p-3">
-              <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
-                Sourcing &amp; Budget
-              </div>
-
-              {selectedObject.source === 'owned' ? (
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-medium text-emerald-200">
-                      Owned Existing Fixture
+          {rightPanelTab === 'inspect' ? (
+            selectedObject ? (
+              <div className="flex-1 space-y-4 overflow-y-auto px-4 py-3.5">
+                {/* Selected Fixture Identity */}
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="rounded-md bg-white/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-200">
+                      {selectedObject.kind}
                     </span>
-                    <span className="font-semibold text-emerald-300">$0</span>
-                  </div>
-                  <p className="text-[11px] leading-relaxed text-zinc-400">
-                    Already owned on-site — contributes $0.00 toward your new-fixture purchase budget.
-                  </p>
-                </div>
-              ) : selectedObject.product ? (
-                <div className="space-y-2">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="text-xs font-semibold text-white">
-                        {selectedObject.product.title}
-                      </div>
-                      <div className="text-[11px] text-zinc-400">
-                        {selectedObject.product.seller}
-                      </div>
-                    </div>
-                    <span className="shrink-0 text-xs font-semibold text-amber-200">
-                      {formatCents(
-                        selectedObject.product.priceCents,
-                        selectedObject.product.currency
-                      )}
-                    </span>
-                  </div>
-
-                  <a
-                    href={selectedObject.product.productUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex items-center justify-center gap-1.5 rounded-lg border border-white/15 bg-white/8 px-3 py-1.5 text-[11px] font-semibold text-white transition-colors hover:bg-white/15"
-                  >
-                    <span>View Live Shopify Product</span>
-                    <ExternalLink className="h-3 w-3" />
-                  </a>
-                </div>
-              ) : (
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-medium text-amber-100">
-                      Spatial Layout Proposal
-                    </span>
-                    <span className="text-[11px] text-zinc-400">Unpriced</span>
-                  </div>
-                  <p className="text-[11px] leading-relaxed text-zinc-400">
-                    Placeholder geometry staged for proportion check. Match a live Shopify SKU to verify exact dimensions &amp; price.
-                  </p>
-                </div>
-              )}
-            </div>
-
-            {/* Per-Object Validation Issues */}
-            <div className="space-y-2">
-              <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
-                Constraint Checks
-              </div>
-
-              {selectedIssues.length === 0 ? (
-                <div className="flex items-center gap-2 rounded-xl border border-emerald-400/25 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
-                  <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-300" />
-                  <span>Clear of walls, fixtures &amp; entrance path.</span>
-                </div>
-              ) : (
-                <div className="space-y-1.5">
-                  {selectedIssues.map((issue, idx) => (
-                    <div
-                      key={`${issue.code}-${idx}`}
-                      className={`flex items-start gap-2 rounded-xl border px-3 py-2 text-[11px] leading-snug ${
-                        issue.severity === 'error'
-                          ? 'border-red-400/35 bg-red-500/14 text-red-100'
-                          : 'border-amber-400/30 bg-amber-500/12 text-amber-100'
+                    <span
+                      className={`rounded-md px-1.5 py-0.5 text-[10px] font-medium capitalize ${
+                        selectedObject.source === 'shopify'
+                          ? 'border border-emerald-400/35 bg-emerald-500/18 text-emerald-200'
+                          : selectedObject.source === 'owned'
+                            ? 'bg-white/8 text-emerald-200/90'
+                            : 'bg-amber-400/12 text-amber-200'
                       }`}
                     >
-                      <AlertTriangle
-                        className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${
-                          issue.severity === 'error'
-                            ? 'text-red-300'
-                            : 'text-amber-300'
-                        }`}
-                      />
-                      <span>{issue.message}</span>
-                    </div>
-                  ))}
+                      {selectedObject.source}
+                    </span>
+                  </div>
+                  <h2 className="mt-1.5 text-sm font-semibold leading-snug text-white">
+                    {selectedObject.label}
+                  </h2>
+                  {selectedObject.source === 'shopify' &&
+                    selectedObject.product && (
+                      <p className="mt-0.5 truncate text-[11px] text-emerald-200/85">
+                        Linked: {selectedObject.product.title}
+                      </p>
+                    )}
                 </div>
-              )}
+
+                {/* Quick Fixture Actions */}
+                <div className="grid grid-cols-3 gap-1.5">
+                  <button
+                    type="button"
+                    disabled={Boolean(selectedObject.locked)}
+                    onClick={() => rotateObject(selectedObject.id, Math.PI / 2)}
+                    className="flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border border-white/10 bg-white/[0.05] px-2 py-2 text-[11px] font-medium text-zinc-100 transition-colors hover:bg-white/12 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <RotateCw className="h-3.5 w-3.5 text-amber-300" />
+                    <span>Rotate 90°</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => toggleLock(selectedObject.id)}
+                    className={`flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border px-2 py-2 text-[11px] font-medium transition-colors ${
+                      selectedObject.locked
+                        ? 'border-amber-300/40 bg-amber-300/15 text-amber-100'
+                        : 'border-white/10 bg-white/[0.05] text-zinc-100 hover:bg-white/12'
+                    }`}
+                  >
+                    {selectedObject.locked ? (
+                      <Lock className="h-3.5 w-3.5 text-amber-300" />
+                    ) : (
+                      <Unlock className="h-3.5 w-3.5 text-zinc-300" />
+                    )}
+                    <span>{selectedObject.locked ? 'Locked' : 'Lock'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => removeObject(selectedObject.id)}
+                    className="flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border border-red-400/20 bg-red-500/10 px-2 py-2 text-[11px] font-medium text-red-200 transition-colors hover:bg-red-500/20"
+                  >
+                    <Trash2 className="h-3.5 w-3.5 text-red-300" />
+                    <span>Remove</span>
+                  </button>
+                </div>
+
+                {/* Dimensions & Verification Badge */}
+                <div className="space-y-2 rounded-xl border border-white/10 bg-white/[0.03] p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
+                      Dimensions
+                    </span>
+                    {selectedObject.dimensionsVerified ? (
+                      <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/35 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-200">
+                        <ShieldCheck className="h-3 w-3" />
+                        Verified
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/35 bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-200">
+                        <AlertTriangle className="h-3 w-3" />
+                        Approximate
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-1.5 text-center">
+                    <div className="rounded-lg bg-black/30 px-1.5 py-1.5">
+                      <div className="text-[10px] text-zinc-400">Width</div>
+                      <div className="text-xs font-semibold text-white">
+                        {metersToFeet(selectedObject.size[0])} ft
+                      </div>
+                      <div className="text-[10px] text-zinc-500">
+                        {selectedObject.size[0].toFixed(2)} m
+                      </div>
+                    </div>
+                    <div className="rounded-lg bg-black/30 px-1.5 py-1.5">
+                      <div className="text-[10px] text-zinc-400">Depth</div>
+                      <div className="text-xs font-semibold text-white">
+                        {metersToFeet(selectedObject.size[2])} ft
+                      </div>
+                      <div className="text-[10px] text-zinc-500">
+                        {selectedObject.size[2].toFixed(2)} m
+                      </div>
+                    </div>
+                    <div className="rounded-lg bg-black/30 px-1.5 py-1.5">
+                      <div className="text-[10px] text-zinc-400">Height</div>
+                      <div className="text-xs font-semibold text-white">
+                        {metersToFeet(selectedObject.size[1])} ft
+                      </div>
+                      <div className="text-[10px] text-zinc-500">
+                        {selectedObject.size[1].toFixed(2)} m
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-1 text-[11px] text-zinc-400">
+                    <span>
+                      Pos: ({metersToFeet(selectedObject.position[0])},{' '}
+                      {metersToFeet(selectedObject.position[2])}) ft
+                    </span>
+                    <span>Yaw: {normalizeDeg(selectedObject.rotationY)}°</span>
+                  </div>
+                </div>
+
+                {/* Sourcing & Budget Section (Strictly Truthful) */}
+                <div className="space-y-2.5 rounded-xl border border-white/10 bg-white/[0.03] p-3">
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
+                    Sourcing &amp; Budget
+                  </div>
+
+                  {selectedObject.source === 'owned' ? (
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-medium text-emerald-200">
+                          Owned Existing Fixture
+                        </span>
+                        <span className="font-semibold text-emerald-300">
+                          $0
+                        </span>
+                      </div>
+                      <p className="text-[11px] leading-relaxed text-zinc-400">
+                        Already owned on-site — contributes $0.00 toward your
+                        new-fixture purchase budget.
+                      </p>
+                    </div>
+                  ) : selectedObject.product ? (
+                    <div className="space-y-2.5">
+                      <div className="flex items-start gap-2.5">
+                        {selectedObject.product.imageUrl &&
+                          brokenThumbUrl !==
+                            selectedObject.product.imageUrl && (
+                            <div className="h-12 w-12 shrink-0 overflow-hidden rounded-lg border border-white/12 bg-black/40">
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img
+                                src={selectedObject.product.imageUrl}
+                                alt={selectedObject.product.title}
+                                onError={() =>
+                                  setBrokenThumbUrl(
+                                    selectedObject.product?.imageUrl ?? null
+                                  )
+                                }
+                                className="h-full w-full object-cover"
+                              />
+                            </div>
+                          )}
+
+                        <div className="min-w-0 flex-1">
+                          <div className="line-clamp-2 text-xs font-semibold leading-snug text-white">
+                            {selectedObject.product.title}
+                          </div>
+                          <div className="mt-0.5 flex items-center justify-between gap-2 text-[11px]">
+                            <span className="truncate text-zinc-400">
+                              {selectedObject.product.seller}
+                            </span>
+                            <span className="shrink-0 font-semibold text-emerald-300">
+                              {formatCents(
+                                selectedObject.product.priceCents,
+                                selectedObject.product.currency
+                              )}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <a
+                        href={selectedObject.product.productUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center justify-center gap-1.5 rounded-lg border border-white/15 bg-white/8 px-3 py-1.5 text-[11px] font-semibold text-white transition-colors hover:bg-white/15"
+                      >
+                        <span>View Live Shopify Product</span>
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <button
+                          type="button"
+                          data-testid="inspector-swap-product-btn"
+                          onClick={handleSwitchToShopTab}
+                          className="flex cursor-pointer items-center justify-center gap-1 rounded-lg border border-emerald-400/35 bg-emerald-500/15 px-2 py-1.5 text-[11px] font-semibold text-emerald-200 transition-colors hover:bg-emerald-500/25"
+                        >
+                          <RefreshCw className="h-3 w-3" />
+                          <span>Swap Product</span>
+                        </button>
+                        <button
+                          type="button"
+                          data-testid="inspector-unlink-sku-btn"
+                          onClick={() => clearObjectProduct(selectedObject.id)}
+                          className="flex cursor-pointer items-center justify-center gap-1 rounded-lg border border-white/12 bg-white/[0.05] px-2 py-1.5 text-[11px] font-medium text-zinc-300 transition-colors hover:border-red-400/35 hover:bg-red-500/12 hover:text-red-200"
+                        >
+                          <Unlink className="h-3 w-3" />
+                          <span>Unlink SKU</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-2.5">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-medium text-amber-100">
+                          Spatial Layout Proposal
+                        </span>
+                        <span className="text-[11px] text-zinc-400">
+                          Unpriced
+                        </span>
+                      </div>
+                      <p className="text-[11px] leading-relaxed text-zinc-400">
+                        Placeholder geometry staged for proportion check. Match
+                        a live Shopify SKU to verify exact dimensions &amp;
+                        price.
+                      </p>
+                      <button
+                        type="button"
+                        data-testid="browse-shopify-matches-btn"
+                        onClick={handleSwitchToShopTab}
+                        className="flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-amber-300 via-amber-200 to-emerald-300 px-3 py-2 text-[11px] font-semibold text-zinc-950 shadow-sm transition-transform hover:brightness-105 active:scale-[0.99]"
+                      >
+                        <span>Browse Real Shopify Matches</span>
+                        <ArrowRight className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Per-Object Validation Issues */}
+                <div className="space-y-2">
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
+                    Constraint Checks
+                  </div>
+
+                  {selectedIssues.length === 0 ? (
+                    <div className="flex items-center gap-2 rounded-xl border border-emerald-400/25 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
+                      <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-300" />
+                      <span>Clear of walls, fixtures &amp; entrance path.</span>
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {selectedIssues.map((issue, idx) => (
+                        <div
+                          key={`${issue.code}-${idx}`}
+                          className={`flex items-start gap-2 rounded-xl border px-3 py-2 text-[11px] leading-snug ${
+                            issue.severity === 'error'
+                              ? 'border-red-400/35 bg-red-500/14 text-red-100'
+                              : 'border-amber-400/30 bg-amber-500/12 text-amber-100'
+                          }`}
+                        >
+                          <AlertTriangle
+                            className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${
+                              issue.severity === 'error'
+                                ? 'text-red-300'
+                                : 'text-amber-300'
+                            }`}
+                          />
+                          <span>{issue.message}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-1 flex-col items-center justify-center gap-3 p-5 text-center">
+                <span className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-amber-300">
+                  <Box className="h-5 w-5" />
+                </span>
+                <div className="space-y-1">
+                  <p className="text-xs font-semibold text-white">
+                    No Fixture Selected
+                  </p>
+                  <p className="text-[11px] leading-relaxed text-zinc-400">
+                    Click any fixture in the 3D boutique or inventory list to
+                    inspect dimensions, constraints, and live Shopify sourcing.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleOpenShop}
+                  className="mt-1 flex cursor-pointer items-center gap-1.5 rounded-xl bg-gradient-to-r from-amber-300 to-emerald-300 px-3.5 py-2 text-xs font-semibold text-zinc-950 transition-transform hover:brightness-105"
+                >
+                  <ShoppingBag className="h-3.5 w-3.5" />
+                  <span>Browse Shopify Catalog</span>
+                </button>
+              </div>
+            )
+          ) : (
+            <div className="min-h-0 flex-1 overflow-hidden [&>aside]:rounded-none [&>aside]:border-0 [&>aside]:bg-transparent [&>aside]:shadow-none">
+              <ProductPanel
+                selectedObject={selectedObject}
+                scene={scene}
+                onReplaceObjectProduct={handleReplaceObjectProduct}
+              />
             </div>
-          </div>
-        </aside>
+          )}
+        </section>
       )}
 
       {/* Bottom-Center Walkthrough Controls HUD */}
@@ -878,7 +1241,7 @@ export default function HomePage() {
           </button>
         </div>
       ) : (
-        /* Bottom-Center Orbit Mode HUD: Violation Alert Pill OR Orbit Hint + Budget + Media Source */
+        /* Bottom-Center Orbit Mode HUD: Violation Alert Pill + Budget + Review Purchases + AI Provenance */
         <div className="pointer-events-none fixed bottom-3 left-1/2 z-20 flex max-w-[95vw] -translate-x-1/2 flex-col items-center gap-2">
           {errorIssues.length > 0 && (
             <button
@@ -903,23 +1266,111 @@ export default function HomePage() {
             </button>
           )}
 
-          <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-2 rounded-2xl border border-white/12 bg-zinc-950/74 px-3.5 py-1.5 text-[11px] text-zinc-300 shadow-[0_12px_40px_rgba(0,0,0,0.45)] backdrop-blur-xl">
-            <span className="hidden text-zinc-400 lg:inline">
+          <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-2 rounded-2xl border border-white/12 bg-zinc-950/76 px-3.5 py-1.5 text-[11px] text-zinc-300 shadow-[0_12px_40px_rgba(0,0,0,0.45)] backdrop-blur-xl">
+            <span className="hidden text-zinc-400 xl:inline">
               Drag to orbit · Click fixture to inspect &amp; move on floor
             </span>
-            <span className="hidden text-zinc-700 lg:inline">·</span>
+            <span className="hidden text-zinc-700 xl:inline">·</span>
 
             <span
               className={`inline-flex items-center gap-1 font-medium ${
                 isOverBudget ? 'text-red-300' : 'text-zinc-200'
               }`}
             >
-              <DollarSign className="h-3.5 w-3.5 text-amber-300" />
+              <DollarSign
+                className={`h-3.5 w-3.5 ${
+                  isOverBudget ? 'text-red-300' : 'text-amber-300'
+                }`}
+              />
               <span>
                 New Budget: {formatBudgetCents(spentCents)} /{' '}
                 {formatCents(scene.budgetCents)}
               </span>
             </span>
+
+            <span className="text-zinc-700">·</span>
+
+            <button
+              type="button"
+              data-testid="bottom-review-purchases-btn"
+              onClick={handleOpenShop}
+              className={`inline-flex cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 py-0.5 text-[11px] font-semibold transition-all ${
+                shopifyObjects.length > 0
+                  ? 'border-emerald-400/45 bg-emerald-500/20 text-emerald-100 hover:bg-emerald-500/30'
+                  : 'border-white/12 bg-white/[0.06] text-zinc-200 hover:border-amber-300/35 hover:bg-white/12 hover:text-white'
+              }`}
+            >
+              <ShoppingBag
+                className={`h-3 w-3 ${
+                  shopifyObjects.length > 0
+                    ? 'text-emerald-300'
+                    : 'text-amber-200'
+                }`}
+              />
+              <span>
+                {shopifyObjects.length > 0
+                  ? `Review Purchases (${shopifyObjects.length})`
+                  : 'Shop Fixtures'}
+              </span>
+            </button>
+
+            {aiTrace && (
+              <>
+                <span className="text-zinc-700">·</span>
+                <span
+                  data-testid="ai-provenance-badge"
+                  title={[
+                    aiTrace.mode === 'live-gemini'
+                      ? 'Live Gemini 4 Pipeline'
+                      : 'Local Fallback Preview',
+                    aiTrace.analyzeModel
+                      ? `Analyze: ${aiTrace.analyzeModel}${
+                          aiTrace.analyzeRequestId
+                            ? ` (${aiTrace.analyzeRequestId})`
+                            : ''
+                        }`
+                      : null,
+                    aiTrace.planModel
+                      ? `Plan: ${aiTrace.planModel}${
+                          aiTrace.planRequestId
+                            ? ` (${aiTrace.planRequestId})`
+                            : ''
+                        }`
+                      : null,
+                    typeof aiTrace.observationCount === 'number'
+                      ? `Observations: ${aiTrace.observationCount}`
+                      : null,
+                    typeof aiTrace.repairCount === 'number'
+                      ? `Constraint repairs: ${aiTrace.repairCount}`
+                      : null,
+                    aiTrace.warnings.length > 0
+                      ? `Notes: ${aiTrace.warnings.join(' | ')}`
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join('\n')}
+                  className={`inline-flex items-center gap-1 rounded-lg border px-2 py-0.5 text-[10px] font-semibold ${
+                    aiTrace.mode === 'live-gemini'
+                      ? 'border-emerald-400/35 bg-emerald-500/16 text-emerald-200'
+                      : 'border-amber-400/35 bg-amber-500/16 text-amber-200'
+                  }`}
+                >
+                  <Sparkles className="h-3 w-3 shrink-0" />
+                  {aiTrace.mode === 'live-gemini' ? (
+                    <span>
+                      {[aiTrace.analyzeModel, aiTrace.planModel]
+                        .filter(Boolean)
+                        .join(' + ') || 'gemini-4'}
+                      {typeof aiTrace.repairCount === 'number'
+                        ? ` · repairs: ${aiTrace.repairCount}`
+                        : ''}
+                    </span>
+                  ) : (
+                    <span>Local Preview</span>
+                  )}
+                </span>
+              </>
+            )}
 
             {lastMediaSource && (
               <>
@@ -928,7 +1379,7 @@ export default function HomePage() {
                   type="button"
                   onClick={() => setIntakeOpen(true)}
                   title={lastMediaSource.notes ?? lastMediaSource.label}
-                  className="inline-flex max-w-[240px] cursor-pointer items-center gap-1.5 rounded-lg border border-white/10 bg-white/6 px-2 py-0.5 text-[11px] text-zinc-200 transition-colors hover:bg-white/12"
+                  className="inline-flex max-w-[190px] cursor-pointer items-center gap-1.5 rounded-lg border border-white/10 bg-white/6 px-2 py-0.5 text-[11px] text-zinc-200 transition-colors hover:bg-white/12"
                 >
                   {lastMediaSource.kind === 'camera' ? (
                     <Camera className="h-3 w-3 shrink-0 text-emerald-300" />
@@ -961,6 +1412,29 @@ export default function HomePage() {
 
       {/* Multimodal Media Intake Modal */}
       <MediaIntakeModal />
+
+      {/* 4-Step SpaceStage Setup Wizard Modal */}
+      {wizardOpen && (
+        <div
+          data-testid="setup-wizard-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="SpaceStage Setup Wizard"
+          onClick={() => setWizardOpen(false)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-2xl shadow-[0_28px_90px_rgba(0,0,0,0.75)]"
+          >
+            <SetupWizard
+              initialScene={scene}
+              onScenePlanned={handleWizardScenePlanned}
+              onClose={() => setWizardOpen(false)}
+            />
+          </div>
+        </div>
+      )}
     </main>
   );
 }

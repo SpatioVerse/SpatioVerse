@@ -10,13 +10,17 @@ import React, {
   type ReactNode,
 } from 'react';
 import { useGLTF } from '@react-three/drei';
-import { useThree, type ThreeEvent } from '@react-three/fiber';
+import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
 import {
   GLB_MODEL_PATHS,
   resolveGlbForObject,
   type GlbModelSpec,
 } from '@/lib/modelCatalog';
+import {
+  deriveProductVisuals,
+  type ProductVisualSpec,
+} from '@/lib/productVisuals';
 import type { SceneObject as SceneObjectType } from '@/lib/schema';
 import {
   getFlutedOakTextures,
@@ -1090,7 +1094,485 @@ function PlantFallbackFixture({ size }: { size: [number, number, number] }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Shopify Product-Faithful Dynamic PBR 3D Fixtures
+// ---------------------------------------------------------------------------
+
+function ShopifyLampFixture({
+  size,
+  visuals,
+}: {
+  size: [number, number, number];
+  visuals: ProductVisualSpec;
+}) {
+  const [w, h, d] = size;
+  const { finish, lampStyle } = visuals;
+  const baseR = Math.min(0.18, Math.min(w, d) * 0.34);
+
+  if (lampStyle === 'midcentury-globe') {
+    const poleH = h * 0.88;
+    const armLen = Math.min(0.28, Math.max(0.18, Math.min(w, d) * 0.44));
+    const globeR = Math.min(0.125, Math.max(0.085, Math.min(w, d) * 0.22));
+    return (
+      <group>
+        {/* Flat weighted mid-century circular disc base */}
+        <mesh position={[0, 0.018, 0]} castShadow receiveShadow>
+          <cylinderGeometry args={[baseR, baseR * 1.04, 0.036, 32]} />
+          <meshStandardMaterial
+            color={finish.metal}
+            metalness={Math.max(0.45, finish.metalness)}
+            roughness={Math.min(0.42, finish.roughness)}
+          />
+        </mesh>
+        {/* Slender vertical mid-century matte stem */}
+        <mesh position={[-armLen * 0.28, 0.036 + poleH / 2, 0]} castShadow>
+          <cylinderGeometry args={[0.012, 0.014, poleH, 16]} />
+          <meshStandardMaterial
+            color={finish.metal}
+            metalness={Math.max(0.45, finish.metalness)}
+            roughness={Math.min(0.4, finish.roughness)}
+          />
+        </mesh>
+        {/* Angled cantilevered arm */}
+        <mesh
+          position={[armLen * 0.14, poleH + 0.055, 0]}
+          rotation={[0, 0, -0.34]}
+          castShadow
+        >
+          <cylinderGeometry args={[0.01, 0.011, armLen * 1.15, 14]} />
+          <meshStandardMaterial
+            color={finish.metal}
+            metalness={Math.max(0.45, finish.metalness)}
+            roughness={Math.min(0.38, finish.roughness)}
+          />
+        </mesh>
+        {/* Brass/metal globe collar */}
+        <mesh position={[armLen * 0.52, poleH + 0.015, 0]} castShadow>
+          <cylinderGeometry args={[0.028, 0.036, 0.045, 18]} />
+          <meshStandardMaterial color={finish.accent} metalness={0.82} roughness={0.25} />
+        </mesh>
+        {/* Luminous frosted milk-glass mid-century LED orb */}
+        <mesh position={[armLen * 0.52, poleH - globeR * 0.72, 0]} castShadow>
+          <sphereGeometry args={[globeR, 32, 24]} />
+          <meshPhysicalMaterial
+            color="#fffdf8"
+            emissive="#ffefd1"
+            emissiveIntensity={1.65}
+            roughness={0.18}
+            clearcoat={0.85}
+          />
+        </mesh>
+      </group>
+    );
+  }
+
+  if (lampStyle === 'minimal-column') {
+    const shadeH = Math.min(0.58, h * 0.34);
+    const shadeR = Math.min(0.14, Math.min(w, d) * 0.28);
+    const poleH = h - shadeH * 0.75;
+    return (
+      <group>
+        {/* Minimalist dark/metallic circular base */}
+        <mesh position={[0, 0.016, 0]} castShadow receiveShadow>
+          <cylinderGeometry args={[baseR, baseR * 1.03, 0.032, 32]} />
+          <meshStandardMaterial
+            color={finish.metal}
+            metalness={Math.max(0.4, finish.metalness)}
+            roughness={0.38}
+          />
+        </mesh>
+        {/* Slim minimalist standing column pole */}
+        <mesh position={[0, 0.032 + poleH / 2, 0]} castShadow>
+          <cylinderGeometry args={[0.011, 0.012, poleH, 16]} />
+          <meshStandardMaterial
+            color={finish.metal}
+            metalness={Math.max(0.5, finish.metalness)}
+            roughness={0.32}
+          />
+        </mesh>
+        {/* Tall glowing minimalist cylindrical linen column shade */}
+        <mesh position={[0, h - shadeH / 2, 0]} castShadow>
+          <cylinderGeometry args={[shadeR, shadeR * 1.04, shadeH, 32]} />
+          <meshStandardMaterial
+            color="#fff8ea"
+            emissive="#ffe2ae"
+            emissiveIntensity={1.15}
+            roughness={0.72}
+          />
+        </mesh>
+        {/* Top & bottom horizontal trim rings */}
+        <mesh position={[0, h - 0.008, 0]} rotation={[Math.PI / 2, 0, 0]}>
+          <torusGeometry args={[shadeR, 0.006, 10, 28]} />
+          <meshStandardMaterial color={finish.metal} metalness={0.7} roughness={0.3} />
+        </mesh>
+        <mesh position={[0, h - shadeH + 0.008, 0]} rotation={[Math.PI / 2, 0, 0]}>
+          <torusGeometry args={[shadeR * 1.04, 0.006, 10, 28]} />
+          <meshStandardMaterial color={finish.metal} metalness={0.7} roughness={0.3} />
+        </mesh>
+      </group>
+    );
+  }
+
+  // Arched brass / contemporary drum shade floor lamp
+  const shadeR = Math.min(0.22, Math.min(w, d) * 0.42);
+  const shadeH = Math.min(0.36, h * 0.22);
+  return (
+    <group>
+      <mesh position={[0, 0.025, 0]} castShadow receiveShadow>
+        <cylinderGeometry args={[baseR * 1.05, baseR * 1.1, 0.05, 32]} />
+        <meshStandardMaterial
+          color={finish.primary}
+          metalness={finish.metalness}
+          roughness={finish.roughness}
+        />
+      </mesh>
+      <mesh position={[0, h * 0.46, 0]} castShadow>
+        <cylinderGeometry args={[0.013, 0.015, h - shadeH * 0.7, 16]} />
+        <meshStandardMaterial
+          color={finish.metal}
+          metalness={Math.max(0.55, finish.metalness)}
+          roughness={0.28}
+        />
+      </mesh>
+      <mesh position={[0, h - shadeH / 2, 0]} castShadow>
+        <cylinderGeometry args={[shadeR * 0.86, shadeR, shadeH, 32, 1, true]} />
+        <meshStandardMaterial
+          color="#f8f2e6"
+          emissive="#ffdfa6"
+          emissiveIntensity={0.8}
+          roughness={0.78}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+    </group>
+  );
+}
+
+function ShopifyShelfFixture({
+  size,
+  visuals,
+}: {
+  size: [number, number, number];
+  visuals: ProductVisualSpec;
+}) {
+  const [w, h, d] = size;
+  const { finish, shelfStyle } = visuals;
+
+  if (shelfStyle === 'led-cabinet') {
+    const drawerH = Math.min(0.34, h * 0.2);
+    const sideT = 0.036;
+    const innerW = Math.max(0.35, w - sideT * 2);
+    const shelfYs = [
+      drawerH + (h - drawerH) * 0.24,
+      drawerH + (h - drawerH) * 0.48,
+      drawerH + (h - drawerH) * 0.72,
+    ];
+    return (
+      <group>
+        {/* Bottom enclosed drawer cabinet */}
+        <mesh position={[0, drawerH / 2, 0]} castShadow receiveShadow>
+          <boxGeometry args={[w, drawerH, d]} />
+          <meshStandardMaterial
+            color={finish.primary}
+            roughness={finish.roughness}
+            metalness={finish.metalness}
+          />
+        </mesh>
+        {/* Recessed drawer face + sleek metallic pull handle */}
+        <mesh position={[0, drawerH * 0.52, d / 2 + 0.006]} castShadow>
+          <boxGeometry args={[w - 0.06, drawerH * 0.74, 0.014]} />
+          <meshStandardMaterial color={finish.secondary} roughness={0.42} metalness={0.22} />
+        </mesh>
+        <mesh position={[0, drawerH * 0.62, d / 2 + 0.022]} castShadow>
+          <boxGeometry args={[Math.min(0.24, w * 0.28), 0.016, 0.018]} />
+          <meshStandardMaterial color={finish.accent} metalness={0.85} roughness={0.24} />
+        </mesh>
+
+        {/* Left, right, top & back display carcass */}
+        <mesh position={[-w / 2 + sideT / 2, drawerH + (h - drawerH) / 2, 0]} castShadow receiveShadow>
+          <boxGeometry args={[sideT, h - drawerH, d]} />
+          <meshStandardMaterial color={finish.primary} roughness={finish.roughness} metalness={finish.metalness} />
+        </mesh>
+        <mesh position={[w / 2 - sideT / 2, drawerH + (h - drawerH) / 2, 0]} castShadow receiveShadow>
+          <boxGeometry args={[sideT, h - drawerH, d]} />
+          <meshStandardMaterial color={finish.primary} roughness={finish.roughness} metalness={finish.metalness} />
+        </mesh>
+        <mesh position={[0, h - sideT / 2, 0]} castShadow receiveShadow>
+          <boxGeometry args={[w, sideT, d]} />
+          <meshStandardMaterial color={finish.primary} roughness={finish.roughness} metalness={finish.metalness} />
+        </mesh>
+        <mesh position={[0, drawerH + (h - drawerH) / 2, -d / 2 + 0.012]} receiveShadow>
+          <boxGeometry args={[innerW, h - drawerH - sideT, 0.02]} />
+          <meshStandardMaterial color={finish.secondary} roughness={0.55} />
+        </mesh>
+
+        {/* Top luminous LED showcase strip */}
+        <mesh position={[0, h - sideT - 0.006, 0]}>
+          <boxGeometry args={[innerW - 0.04, 0.01, 0.028]} />
+          <meshStandardMaterial
+            color="#ffffff"
+            emissive="#fff1d0"
+            emissiveIntensity={2.8}
+            toneMapped={false}
+          />
+        </mesh>
+
+        {/* Tempered glass shelves + glowing LED light bars + skincare vessels */}
+        {shelfYs.map((sy, idx) => (
+          <group key={idx} position={[0, sy, 0]}>
+            <mesh castShadow receiveShadow>
+              <boxGeometry args={[innerW - 0.01, 0.014, d * 0.88]} />
+              <meshPhysicalMaterial
+                color="#dce8ee"
+                roughness={0.08}
+                metalness={0.05}
+                transmission={0.55}
+                transparent
+                opacity={0.72}
+              />
+            </mesh>
+            {/* Under-shelf LED strip */}
+            <mesh position={[0, -0.01, -d * 0.34]}>
+              <boxGeometry args={[innerW - 0.05, 0.007, 0.014]} />
+              <meshStandardMaterial
+                color="#fffdf8"
+                emissive="#ffeac2"
+                emissiveIntensity={2.4}
+                toneMapped={false}
+              />
+            </mesh>
+            {/* Featured boutique bottles */}
+            <SkincareBottle position={[-innerW * 0.28, 0.008, 0]} radius={0.03} height={0.17} styleIndex={idx} />
+            <SkincareBottle position={[0, 0.008, 0.02]} radius={0.034} height={0.11} styleIndex={idx + 1} isJar />
+            <SkincareBottle position={[innerW * 0.26, 0.008, -0.01]} radius={0.028} height={0.19} styleIndex={idx + 2} />
+          </group>
+        ))}
+
+        {/* Front subtle glass showcase door frame */}
+        <mesh position={[0, drawerH + (h - drawerH) / 2, d / 2 - 0.008]}>
+          <planeGeometry args={[innerW - 0.02, h - drawerH - sideT - 0.02]} />
+          <meshPhysicalMaterial
+            color="#e9f2f7"
+            transparent
+            opacity={0.13}
+            roughness={0.05}
+            metalness={0.1}
+            depthWrite={false}
+          />
+        </mesh>
+      </group>
+    );
+  }
+
+  // Minimalist crisp-white / walnut / metal bookcase
+  const sideT = 0.034;
+  const innerW = Math.max(0.35, w - sideT * 2);
+  const shelfCount = 5;
+  const ys = Array.from({ length: shelfCount }, (_, i) => 0.08 + ((h - 0.12) / (shelfCount - 1)) * i);
+  const frameColor = shelfStyle === 'metal-etagere' ? finish.metal : finish.primary;
+  const boardColor = shelfStyle === 'minimal-bookcase' ? finish.primary : finish.secondary;
+
+  return (
+    <group>
+      {/* Left & right panels / posts */}
+      <mesh position={[-w / 2 + sideT / 2, h / 2, 0]} castShadow receiveShadow>
+        <boxGeometry args={[sideT, h, d]} />
+        <meshStandardMaterial color={frameColor} roughness={finish.roughness} metalness={finish.metalness} />
+      </mesh>
+      <mesh position={[w / 2 - sideT / 2, h / 2, 0]} castShadow receiveShadow>
+        <boxGeometry args={[sideT, h, d]} />
+        <meshStandardMaterial color={frameColor} roughness={finish.roughness} metalness={finish.metalness} />
+      </mesh>
+      {/* Clean back panel for bookcase */}
+      {shelfStyle !== 'metal-etagere' && (
+        <mesh position={[0, h / 2, -d / 2 + 0.01]} receiveShadow>
+          <boxGeometry args={[innerW, h - 0.04, 0.018]} />
+          <meshStandardMaterial color={finish.secondary} roughness={0.62} />
+        </mesh>
+      )}
+      {/* Center vertical cube divider */}
+      <mesh position={[0, h / 2, 0]} castShadow receiveShadow>
+        <boxGeometry args={[0.026, h - 0.08, d * 0.92]} />
+        <meshStandardMaterial color={frameColor} roughness={finish.roughness} />
+      </mesh>
+      {/* Horizontal shelves + curated bottles */}
+      {ys.map((sy, idx) => (
+        <group key={idx} position={[0, sy, 0]}>
+          <mesh castShadow receiveShadow>
+            <boxGeometry args={[innerW, 0.028, d * 0.96]} />
+            <meshStandardMaterial color={boardColor} roughness={finish.roughness} />
+          </mesh>
+          {idx > 0 && idx < shelfCount - 1 && (
+            <>
+              <SkincareBottle position={[-innerW * 0.25, 0.016, 0]} radius={0.03} height={0.16} styleIndex={idx} />
+              <SkincareBottle position={[innerW * 0.25, 0.016, 0]} radius={0.032} height={0.12} styleIndex={idx + 2} isJar />
+            </>
+          )}
+        </group>
+      ))}
+    </group>
+  );
+}
+
+function ShopifyTableFixture({
+  size,
+  visuals,
+}: {
+  size: [number, number, number];
+  visuals: ProductVisualSpec;
+}) {
+  const [w, h, d] = size;
+  const { finish, tableStyle } = visuals;
+
+  if (tableStyle === 'round-metal') {
+    const r = Math.min(w, d) / 2;
+    const topT = 0.042;
+    const lowerY = h * 0.34;
+    const legAngles = [Math.PI / 4, (3 * Math.PI) / 4, (5 * Math.PI) / 4, (7 * Math.PI) / 4];
+
+    return (
+      <group>
+        {/* Circular walnut / wood tabletop */}
+        <mesh position={[0, h - topT / 2, 0]} castShadow receiveShadow>
+          <cylinderGeometry args={[r, r * 0.99, topT, 40]} />
+          <meshStandardMaterial
+            color={finish.primary}
+            roughness={finish.roughness}
+            metalness={finish.metalness}
+          />
+        </mesh>
+        {/* Lower open circular display shelf */}
+        <mesh position={[0, lowerY, 0]} castShadow receiveShadow>
+          <cylinderGeometry args={[r * 0.84, r * 0.84, 0.028, 36]} />
+          <meshStandardMaterial color={finish.secondary} roughness={finish.roughness + 0.05} />
+        </mesh>
+        {/* Matte metal leg frame + circular ring */}
+        {legAngles.map((ang, i) => (
+          <mesh
+            key={i}
+            position={[Math.cos(ang) * r * 0.82, (h - topT) / 2, Math.sin(ang) * r * 0.82]}
+            castShadow
+          >
+            <cylinderGeometry args={[0.013, 0.013, h - topT, 12]} />
+            <meshStandardMaterial color={finish.metal} metalness={0.72} roughness={0.34} />
+          </mesh>
+        ))}
+        <mesh position={[0, h - topT - 0.012, 0]} rotation={[Math.PI / 2, 0, 0]}>
+          <torusGeometry args={[r * 0.82, 0.011, 10, 36]} />
+          <meshStandardMaterial color={finish.metal} metalness={0.72} roughness={0.34} />
+        </mesh>
+        {/* Curated hero skincare trio on round tabletop */}
+        <SkincareBottle position={[-r * 0.28, h, -r * 0.1]} radius={0.032} height={0.18} styleIndex={0} />
+        <SkincareBottle position={[r * 0.12, h, r * 0.12]} radius={0.038} height={0.1} styleIndex={1} isJar />
+        <SkincareBottle position={[r * 0.25, h, -r * 0.2]} radius={0.028} height={0.16} styleIndex={2} />
+      </group>
+    );
+  }
+
+  // Cherry / Walnut / Matte architectural wood display table
+  const topT = 0.048;
+  const legW = 0.055;
+  const legH = h - topT;
+  const legCoords: [number, number][] = [
+    [-w / 2 + 0.09, -d / 2 + 0.09],
+    [w / 2 - 0.09, -d / 2 + 0.09],
+    [-w / 2 + 0.09, d / 2 - 0.09],
+    [w / 2 - 0.09, d / 2 - 0.09],
+  ];
+
+  return (
+    <group>
+      <mesh position={[0, h - topT / 2, 0]} castShadow receiveShadow>
+        <boxGeometry args={[w, topT, d]} />
+        <meshStandardMaterial
+          color={finish.primary}
+          roughness={finish.roughness}
+          metalness={finish.metalness}
+        />
+      </mesh>
+      <mesh position={[0, h * 0.28, 0]} castShadow receiveShadow>
+        <boxGeometry args={[w - 0.14, 0.026, d - 0.14]} />
+        <meshStandardMaterial color={finish.secondary} roughness={finish.roughness + 0.06} />
+      </mesh>
+      {legCoords.map(([lx, lz], idx) => (
+        <mesh key={idx} position={[lx, legH / 2, lz]} castShadow receiveShadow>
+          <boxGeometry args={[legW, legH, legW]} />
+          <meshStandardMaterial color={finish.secondary} roughness={finish.roughness} />
+        </mesh>
+      ))}
+      <SkincareBottle position={[-w * 0.22, h, 0]} radius={0.034} height={0.19} styleIndex={0} />
+      <SkincareBottle position={[0, h, -d * 0.08]} radius={0.04} height={0.11} styleIndex={1} isJar />
+      <SkincareBottle position={[w * 0.22, h, d * 0.06]} radius={0.03} height={0.17} styleIndex={3} />
+    </group>
+  );
+}
+
+function ShopifyRackFixture({
+  size,
+  visuals,
+}: {
+  size: [number, number, number];
+  visuals: ProductVisualSpec;
+}) {
+  const [w, h, d] = size;
+  const { finish } = visuals;
+  const railSpan = Math.max(0.5, w - 0.1);
+  const railY = h - 0.02;
+
+  return (
+    <group>
+      <mesh position={[0, 0.04, 0]} castShadow receiveShadow>
+        <boxGeometry args={[w, 0.08, d]} />
+        <meshStandardMaterial color={finish.secondary} roughness={finish.roughness} metalness={finish.metalness} />
+      </mesh>
+      {([-1, 1] as const).map((dir) => (
+        <mesh key={dir} position={[dir * (railSpan / 2), h / 2, 0]} castShadow>
+          <cylinderGeometry args={[0.016, 0.016, h, 16]} />
+          <meshStandardMaterial color={finish.metal} metalness={0.78} roughness={0.28} />
+        </mesh>
+      ))}
+      <mesh position={[0, railY, 0]} rotation={[0, 0, Math.PI / 2]} castShadow>
+        <cylinderGeometry args={[0.016, 0.016, railSpan + 0.04, 16]} />
+        <meshStandardMaterial color={finish.metal} metalness={0.78} roughness={0.28} />
+      </mesh>
+      {[-0.28, 0, 0.28].map((frac, idx) => (
+        <mesh key={idx} position={[railSpan * frac, railY - 0.45, 0]} castShadow receiveShadow>
+          <boxGeometry args={[0.065, 0.78, d * 0.65]} />
+          <meshStandardMaterial
+            color={idx === 1 ? finish.accent : idx === 0 ? '#ede7dc' : '#cfd5cc'}
+            roughness={0.86}
+          />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
 function ParametricFixture({ object }: { object: SceneObjectType }) {
+  const visuals = useMemo(
+    () => (object.source === 'shopify' && object.product ? deriveProductVisuals(object.product) : null),
+    [object.source, object.product]
+  );
+
+  if (visuals) {
+    switch (object.kind) {
+      case 'lamp':
+        return <ShopifyLampFixture size={object.size} visuals={visuals} />;
+      case 'shelf':
+        return <ShopifyShelfFixture size={object.size} visuals={visuals} />;
+      case 'table':
+        return <ShopifyTableFixture size={object.size} visuals={visuals} />;
+      case 'rack':
+        return <ShopifyRackFixture size={object.size} visuals={visuals} />;
+      case 'counter':
+        return <FlutedCounterFixture size={object.size} />;
+      case 'art':
+        return <FloorLeaningArtFixture size={object.size} />;
+      case 'plant':
+        return <PlantFallbackFixture size={object.size} />;
+    }
+  }
+
   switch (object.kind) {
     case 'shelf':
       return <ApothecaryShelfFixture size={object.size} />;
@@ -1344,23 +1826,67 @@ export function SceneObject({
   };
 
   const glbSpec = useMemo(() => resolveGlbForObject(object), [object]);
-  const showHalo = isSelected || hasError || isVoiceHighlighted || isPreviewOrigin;
+  const meshGroupRef = useRef<THREE.Group>(null);
+  const swapAnimRef = useRef<number>(1);
+  const prevVariantRef = useRef<string | undefined>(object.product?.variantId);
+  const [recentlySwapped, setRecentlySwapped] = useState(false);
+
+  // Trigger silky visual pop + emerald highlight pulse when replaced with a Shopify SKU
+  useEffect(() => {
+    const nextVariant = object.product?.variantId;
+    if (nextVariant && nextVariant !== prevVariantRef.current) {
+      swapAnimRef.current = 0;
+      setRecentlySwapped(true);
+      const timer = setTimeout(() => setRecentlySwapped(false), 1600);
+      prevVariantRef.current = nextVariant;
+      return () => clearTimeout(timer);
+    }
+    prevVariantRef.current = nextVariant;
+    return undefined;
+  }, [object.product?.variantId]);
+
+  useFrame((_, delta) => {
+    const g = meshGroupRef.current;
+    if (!g) return;
+    if (swapAnimRef.current < 1) {
+      swapAnimRef.current = Math.min(1, swapAnimRef.current + delta * 2.6);
+      const t = swapAnimRef.current;
+      // Smooth spring overshoot curve: 0.84 -> 1.045 -> 1.0
+      const s = 1 - 0.16 * Math.exp(-6 * t) * Math.cos(t * Math.PI * 2.2);
+      g.scale.set(s, s, s);
+    } else if (g.scale.x !== 1) {
+      g.scale.set(1, 1, 1);
+    }
+  });
+
+  const showHalo =
+    isSelected ||
+    hasError ||
+    recentlySwapped ||
+    isVoiceHighlighted ||
+    isPreviewOrigin;
   const haloColor = hasError
     ? '#ef4444'
     : isVoiceHighlighted
       ? '#a855f7'
       : isPreviewOrigin
         ? '#f59e0b'
-        : '#0ea5e9';
+        : recentlySwapped
+          ? '#10b981'
+          : object.source === 'shopify'
+            ? '#34d399'
+            : '#0ea5e9';
   const ringColor = hasError
     ? '#ef4444'
     : isVoiceHighlighted
       ? '#c084fc'
       : isPreviewOrigin
         ? '#fbbf24'
-        : hasWarning
-          ? '#f59e0b'
-          : '#0ea5e9';
+        : recentlySwapped || object.source === 'shopify'
+          ? '#10b981'
+          : hasWarning
+            ? '#f59e0b'
+            : '#0ea5e9';
 
   return (
     <group
@@ -1371,23 +1897,25 @@ export function SceneObject({
       onPointerOver={handlePointerOver}
       onPointerOut={handlePointerOut}
     >
-      {glbSpec ? (
-        <GlbErrorBoundary
-          resetKey={`${object.id}:${glbSpec.url}`}
-          fallback={<ParametricFixture object={object} />}
-        >
-          <Suspense fallback={<ParametricFixture object={object} />}>
-            <GlbNormalizedModel
-              url={glbSpec.url}
-              targetSize={object.size}
-              fitMode={glbSpec.fitMode}
-              yOffset={glbSpec.yOffset ?? 0}
-            />
-          </Suspense>
-        </GlbErrorBoundary>
-      ) : (
-        <ParametricFixture object={object} />
-      )}
+      <group ref={meshGroupRef}>
+        {glbSpec ? (
+          <GlbErrorBoundary
+            resetKey={`${object.id}:${glbSpec.url}`}
+            fallback={<ParametricFixture object={object} />}
+          >
+            <Suspense fallback={<ParametricFixture object={object} />}>
+              <GlbNormalizedModel
+                url={glbSpec.url}
+                targetSize={object.size}
+                fitMode={glbSpec.fitMode}
+                yOffset={glbSpec.yOffset ?? 0}
+              />
+            </Suspense>
+          </GlbErrorBoundary>
+        ) : (
+          <ParametricFixture object={object} />
+        )}
+      </group>
 
       {/* Subtle warm boutique pool of light for architectural floor lamps */}
       {object.kind === 'lamp' && (

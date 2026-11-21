@@ -21,6 +21,7 @@ import {
 
 export type CameraMode = 'orbit' | 'walkthrough';
 export type CameraPreset = 'perspective' | 'top' | 'entrance';
+export type RightPanelTab = 'inspect' | 'shop';
 
 export type MediaSourceSummary = {
   kind: 'video' | 'image' | 'camera' | 'youtube';
@@ -31,19 +32,19 @@ export type MediaSourceSummary = {
   updatedAt: string;
 };
 
-const STORAGE_KEY = 'spacestage.scene.v2';
-const GEOM_EPS = 1e-3; // 1 mm floating-point tolerance
-
-type Vec2 = { x: number; z: number };
-
-type Obb2D = {
-  cx: number;
-  cz: number;
-  halfW: number;
-  halfD: number;
-  axisX: Vec2;
-  axisZ: Vec2;
+export type AiRunTrace = {
+  analyzeModel?: string;
+  analyzeRequestId?: string;
+  observationCount?: number;
+  planModel?: string;
+  planRequestId?: string;
+  repairCount?: number;
+  warnings: string[];
+  mode: 'live-gemini' | 'local-fallback';
+  updatedAt: string;
 };
+
+const STORAGE_KEY = 'spacestage.scene.v2';
 
 function cloneScene(scene: ShopScene): ShopScene {
   if (typeof structuredClone === 'function') {
@@ -56,226 +57,15 @@ function isPresetKey(value: unknown): value is ScenePresetKey {
   return value === 'flagship' || value === 'compact';
 }
 
-function formatCents(cents: number): string {
-  return `$${(cents / 100).toLocaleString('en-US', {
-    minimumFractionDigits: cents % 100 === 0 ? 0 : 2,
-    maximumFractionDigits: 2,
-  })}`;
-}
-
-function objectToObb2D(obj: SceneObject): Obb2D {
-  const cos = Math.cos(obj.rotationY);
-  const sin = Math.sin(obj.rotationY);
-  // Matches Three.js Y-up right-handed rotation around +Y:
-  // local +X -> (cos, -sin), local +Z -> (sin, cos)
-  return {
-    cx: obj.position[0],
-    cz: obj.position[2],
-    halfW: obj.size[0] / 2,
-    halfD: obj.size[2] / 2,
-    axisX: { x: cos, z: -sin },
-    axisZ: { x: sin, z: cos },
-  };
-}
-
-function dot2(a: Vec2, b: Vec2): number {
-  return a.x * b.x + a.z * b.z;
-}
-
-function obb2DOverlaps(a: Obb2D, b: Obb2D, eps = GEOM_EPS): boolean {
-  const delta: Vec2 = { x: b.cx - a.cx, z: b.cz - a.cz };
-  const axes: Vec2[] = [a.axisX, a.axisZ, b.axisX, b.axisZ];
-
-  for (const axis of axes) {
-    const dist = Math.abs(dot2(delta, axis));
-    const projA =
-      a.halfW * Math.abs(dot2(a.axisX, axis)) +
-      a.halfD * Math.abs(dot2(a.axisZ, axis));
-    const projB =
-      b.halfW * Math.abs(dot2(b.axisX, axis)) +
-      b.halfD * Math.abs(dot2(b.axisZ, axis));
-
-    if (dist >= projA + projB - eps) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-function verticalOverlaps(a: SceneObject, b: SceneObject, eps = GEOM_EPS): boolean {
-  const aMinY = a.position[1];
-  const aMaxY = a.position[1] + a.size[1];
-  const bMinY = b.position[1];
-  const bMaxY = b.position[1] + b.size[1];
-  return aMinY < bMaxY - eps && bMinY < aMaxY - eps;
-}
-
-function getEntranceClearanceObb(scene: ShopScene): Obb2D {
-  const { width, depth, entrance } = scene.room;
-  const clearanceDepth = Math.max(scene.minWalkwayWidth, 0.75);
-  const openingWidth = Math.max(entrance.width, scene.minWalkwayWidth);
-  const halfRoomW = width / 2;
-  const halfRoomD = depth / 2;
-
-  switch (entrance.wall) {
-    case 'north':
-      return {
-        cx: entrance.offset,
-        cz: -halfRoomD + clearanceDepth / 2,
-        halfW: openingWidth / 2,
-        halfD: clearanceDepth / 2,
-        axisX: { x: 1, z: 0 },
-        axisZ: { x: 0, z: 1 },
-      };
-    case 'south':
-      return {
-        cx: entrance.offset,
-        cz: halfRoomD - clearanceDepth / 2,
-        halfW: openingWidth / 2,
-        halfD: clearanceDepth / 2,
-        axisX: { x: 1, z: 0 },
-        axisZ: { x: 0, z: 1 },
-      };
-    case 'west':
-      return {
-        cx: -halfRoomW + clearanceDepth / 2,
-        cz: entrance.offset,
-        halfW: clearanceDepth / 2,
-        halfD: openingWidth / 2,
-        axisX: { x: 1, z: 0 },
-        axisZ: { x: 0, z: 1 },
-      };
-    case 'east':
-      return {
-        cx: halfRoomW - clearanceDepth / 2,
-        cz: entrance.offset,
-        halfW: clearanceDepth / 2,
-        halfD: openingWidth / 2,
-        axisX: { x: 1, z: 0 },
-        axisZ: { x: 0, z: 1 },
-      };
-  }
-}
-
 /**
  * Default spatial & commerce constraint validator for ShopScene.
- * Checks room bounds, exact rotated OBB pairwise collisions, entrance clearance,
- * no-drilling lease compliance, live Shopify purchase budget, and unverified dimensions.
+ * Delegates to `@/lib/constraints`'s deterministic constraint engine
+ * (room bounds, exact 2D SAT rotated OBB collisions, entrance clearance &
+ * 3ft walkway BFS connectivity, no-drilling compliance, budget cap, and
+ * unverified dimension warnings).
  */
 export function defaultSceneValidator(scene: ShopScene): ConstraintIssue[] {
-  const issues: ConstraintIssue[] = [];
-  const halfW = scene.room.width / 2;
-  const halfD = scene.room.depth / 2;
-  const roomH = scene.room.height;
-  const obbs = scene.objects.map(objectToObb2D);
-  const entranceObb = getEntranceClearanceObb(scene);
-
-  // 1. Bounds, entrance clearance, no-drilling, and unverified dimensions
-  for (let i = 0; i < scene.objects.length; i += 1) {
-    const obj = scene.objects[i];
-    const obb = obbs[i];
-
-    const extentX =
-      obb.halfW * Math.abs(obb.axisX.x) + obb.halfD * Math.abs(obb.axisZ.x);
-    const extentZ =
-      obb.halfW * Math.abs(obb.axisX.z) + obb.halfD * Math.abs(obb.axisZ.z);
-
-    const minX = obb.cx - extentX;
-    const maxX = obb.cx + extentX;
-    const minZ = obb.cz - extentZ;
-    const maxZ = obb.cz + extentZ;
-    const minY = obj.position[1];
-    const maxY = obj.position[1] + obj.size[1];
-
-    if (
-      minX < -halfW - GEOM_EPS ||
-      maxX > halfW + GEOM_EPS ||
-      minZ < -halfD - GEOM_EPS ||
-      maxZ > halfD + GEOM_EPS ||
-      minY < -GEOM_EPS ||
-      maxY > roomH + GEOM_EPS
-    ) {
-      issues.push({
-        code: 'OUT_OF_BOUNDS',
-        objectIds: [obj.id],
-        message: `${obj.label} extends outside the room envelope.`,
-        severity: 'error',
-      });
-    }
-
-    // Entrance walkway clearance check (objects below head clearance height)
-    if (minY < 2.1 && obb2DOverlaps(obb, entranceObb)) {
-      issues.push({
-        code: 'BLOCKED_PATH',
-        objectIds: [obj.id],
-        message: `${obj.label} obstructs the ${scene.room.entrance.wall} entrance clearance zone.`,
-        severity: 'error',
-      });
-    }
-
-    // No-drilling lease constraint for wall-mounted art
-    if (scene.noDrilling && obj.kind === 'art' && obj.position[1] > 0.05) {
-      issues.push({
-        code: 'NO_DRILLING',
-        objectIds: [obj.id],
-        message: `${obj.label} is elevated above the floor and requires wall drilling (no-drilling lease enabled).`,
-        severity: 'error',
-      });
-    }
-
-    // Unverified dimensions warning
-    if (!obj.dimensionsVerified) {
-      issues.push({
-        code: 'UNVERIFIED_DIMENSIONS',
-        objectIds: [obj.id],
-        message: `${obj.label} uses estimated dimensions until verified against a product spec.`,
-        severity: 'warning',
-      });
-    }
-  }
-
-  // 2. Pairwise rotated-footprint collisions
-  for (let i = 0; i < scene.objects.length; i += 1) {
-    for (let j = i + 1; j < scene.objects.length; j += 1) {
-      const objA = scene.objects[i];
-      const objB = scene.objects[j];
-      if (
-        verticalOverlaps(objA, objB) &&
-        obb2DOverlaps(obbs[i], obbs[j])
-      ) {
-        issues.push({
-          code: 'COLLISION',
-          objectIds: [objA.id, objB.id],
-          message: `${objA.label} overlaps with ${objB.label}.`,
-          severity: 'error',
-        });
-      }
-    }
-  }
-
-  // 3. New-purchase budget check (owned items always contribute 0 cents)
-  let totalPurchaseCents = 0;
-  const pricedObjectIds: string[] = [];
-
-  for (const obj of scene.objects) {
-    if (obj.source !== 'owned' && obj.product) {
-      totalPurchaseCents += obj.product.priceCents;
-      pricedObjectIds.push(obj.id);
-    }
-  }
-
-  if (totalPurchaseCents > scene.budgetCents) {
-    const overCents = totalPurchaseCents - scene.budgetCents;
-    issues.push({
-      code: 'OVER_BUDGET',
-      objectIds: pricedObjectIds,
-      message: `Selected purchases (${formatCents(totalPurchaseCents)}) exceed the ${formatCents(scene.budgetCents)} budget by ${formatCents(overCents)}.`,
-      severity: 'error',
-    });
-  }
-
-  return issues;
+  return validateScene(scene);
 }
 
 type PersistedScenePayload = {
@@ -315,6 +105,9 @@ export interface SceneStoreState {
   validator: SceneValidator;
   hydrated: boolean;
   intakeOpen: boolean;
+  wizardOpen: boolean;
+  rightPanelTab: RightPanelTab;
+  aiTrace: AiRunTrace | null;
   lastMediaSource: MediaSourceSummary | null;
 
   /** Undo stack of committed ShopScene snapshots (most recent at end) */
@@ -341,9 +134,13 @@ export interface SceneStoreState {
   rotateObject: (id: string, deltaRadians: number) => void;
   toggleLock: (id: string) => void;
   updateObject: (id: string, patch: Partial<Omit<SceneObject, 'id'>>) => void;
+  clearObjectProduct: (id: string) => void;
   removeObject: (id: string) => void;
   resetScene: () => void;
   setIntakeOpen: (open: boolean) => void;
+  setWizardOpen: (open: boolean) => void;
+  setRightPanelTab: (tab: RightPanelTab) => void;
+  setAiTrace: (trace: AiRunTrace | null) => void;
   setLastMediaSource: (source: MediaSourceSummary | null) => void;
 
   bumpEditEpoch: () => number;
@@ -385,6 +182,9 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
   validator: validateScene,
   hydrated: false,
   intakeOpen: false,
+  wizardOpen: false,
+  rightPanelTab: 'inspect',
+  aiTrace: null,
   lastMediaSource: null,
   undoStack: [],
   voicePreview: null,
@@ -643,6 +443,35 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
     });
   },
 
+  clearObjectProduct: (id) => {
+    set((state) => {
+      const exists = state.scene.objects.some((obj) => obj.id === id);
+      if (!exists) {
+        return state;
+      }
+
+      const nextScene: ShopScene = {
+        ...state.scene,
+        objects: state.scene.objects.map((obj) =>
+          obj.id === id
+            ? {
+                ...obj,
+                source: 'proposal',
+                product: undefined,
+                dimensionsVerified: false,
+              }
+            : obj
+        ),
+      };
+
+      persistSceneState(state.activePreset, nextScene);
+      return {
+        scene: nextScene,
+        issues: state.validator(nextScene),
+      };
+    });
+  },
+
   removeObject: (id) => {
     set((state) => {
       const nextObjects = state.scene.objects.filter((obj) => obj.id !== id);
@@ -685,6 +514,18 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
 
   setIntakeOpen: (open) => {
     set({ intakeOpen: open });
+  },
+
+  setWizardOpen: (open) => {
+    set({ wizardOpen: open });
+  },
+
+  setRightPanelTab: (tab) => {
+    set({ rightPanelTab: tab });
+  },
+
+  setAiTrace: (trace) => {
+    set({ aiTrace: trace });
   },
 
   setLastMediaSource: (source) => {
