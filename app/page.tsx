@@ -25,6 +25,7 @@ import {
 import type { WalkerPose } from '@/components/FirstPersonRig';
 import { MediaIntakeModal } from '@/components/MediaIntakeModal';
 import { SceneToolbar } from '@/components/SceneToolbar';
+import { VoiceRoomControl } from '@/components/VoiceRoomControl';
 import {
   FT_TO_METERS,
   type ConstraintIssue,
@@ -954,6 +955,9 @@ export default function HomePage() {
           </div>
         </div>
       )}
+
+      {/* Live Multilingual Voice-Editing Control */}
+      <VoiceRoomControl />
 
       {/* Multimodal Media Intake Modal */}
       <MediaIntakeModal />

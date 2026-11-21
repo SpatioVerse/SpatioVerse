@@ -4,6 +4,7 @@ import {
   flagshipScene,
   type ScenePresetKey,
 } from '@/fixtures/demoScene';
+import { validateScene } from '@/lib/constraints';
 import {
   ShopSceneSchema,
   type ConstraintIssue,
@@ -12,6 +13,11 @@ import {
   type ShopScene,
   type Vec3,
 } from '@/lib/schema';
+import {
+  applyPoseToScene,
+  findValidatedAlternative,
+  type VoicePreviewState,
+} from '@/lib/voiceActions';
 
 export type CameraMode = 'orbit' | 'walkthrough';
 export type CameraPreset = 'perspective' | 'top' | 'entrance';
@@ -289,6 +295,13 @@ function persistSceneState(activePreset: ScenePresetKey, scene: ShopScene): void
   }
 }
 
+export interface ApplyVoicePreviewOutcome {
+  applied: boolean;
+  stale?: boolean;
+  reason?: string;
+  preview: VoicePreviewState | null;
+}
+
 export interface SceneStoreState {
   scene: ShopScene;
   activePreset: ScenePresetKey;
@@ -303,6 +316,17 @@ export interface SceneStoreState {
   hydrated: boolean;
   intakeOpen: boolean;
   lastMediaSource: MediaSourceSummary | null;
+
+  /** Undo stack of committed ShopScene snapshots (most recent at end) */
+  undoStack: ShopScene[];
+  /** Active translucent 3D preview from live voice/typed editing */
+  voicePreview: VoicePreviewState | null;
+  /** Object IDs highlighted during ambiguous reference clarification */
+  voiceHighlightIds: string[];
+  /** Monotonic token incremented on manual drag, selection switch, interrupt, commit, cancel, or undo */
+  editEpoch: number;
+  /** Internal snapshot taken at start of manual drag so a drag commits as one undo step */
+  dragStartSnapshot: ShopScene | null;
 
   hydrateFromStorage: () => void;
   selectObject: (id: string | null) => void;
@@ -321,9 +345,32 @@ export interface SceneStoreState {
   resetScene: () => void;
   setIntakeOpen: (open: boolean) => void;
   setLastMediaSource: (source: MediaSourceSummary | null) => void;
+
+  bumpEditEpoch: () => number;
+  setVoiceHighlightIds: (ids: string[]) => void;
+  applyVoicePreview: (
+    objectId: string,
+    nextPosition: Vec3,
+    nextRotationY: number,
+    summary: string,
+    expectedEpoch?: number
+  ) => ApplyVoicePreviewOutcome;
+  freezeVoicePreview: () => boolean;
+  previewSuggestedAlternative: () => ApplyVoicePreviewOutcome;
+  commitVoicePreview: () => boolean;
+  cancelVoicePreview: () => void;
+  undo: () => boolean;
 }
 
+const MAX_UNDO_HISTORY = 30;
 const initialScene = cloneScene(flagshipScene);
+
+function pushUndoSnapshot(stack: ShopScene[], snapshot: ShopScene): ShopScene[] {
+  const next = [...stack, cloneScene(snapshot)];
+  return next.length > MAX_UNDO_HISTORY
+    ? next.slice(next.length - MAX_UNDO_HISTORY)
+    : next;
+}
 
 export const useSceneStore = create<SceneStoreState>((set, get) => ({
   scene: initialScene,
@@ -334,11 +381,16 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
   cameraPreset: 'perspective',
   cameraPresetTick: 0,
   showGrid: false,
-  issues: defaultSceneValidator(initialScene),
-  validator: defaultSceneValidator,
+  issues: validateScene(initialScene),
+  validator: validateScene,
   hydrated: false,
   intakeOpen: false,
   lastMediaSource: null,
+  undoStack: [],
+  voicePreview: null,
+  voiceHighlightIds: [],
+  editEpoch: 0,
+  dragStartSnapshot: null,
 
   hydrateFromStorage: () => {
     if (typeof window === 'undefined') {
@@ -385,11 +437,48 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
   },
 
   selectObject: (id) => {
-    set({ selectedId: id });
+    set((state) => {
+      if (state.selectedId === id) {
+        return state;
+      }
+      const previewStale =
+        state.voicePreview && id !== state.voicePreview.objectId;
+      return {
+        selectedId: id,
+        voiceHighlightIds: [],
+        voicePreview: previewStale ? null : state.voicePreview,
+        editEpoch: state.editEpoch + 1,
+      };
+    });
   },
 
   setDragging: (dragging) => {
-    set({ isDragging: dragging });
+    set((state) => {
+      if (dragging) {
+        return {
+          isDragging: true,
+          dragStartSnapshot: cloneScene(state.scene),
+          voicePreview: null,
+          voiceHighlightIds: [],
+          editEpoch: state.editEpoch + 1,
+        };
+      }
+
+      // Finishing manual drag: push dragStartSnapshot onto undoStack if moved
+      let nextUndoStack = state.undoStack;
+      if (state.dragStartSnapshot) {
+        const beforeJson = JSON.stringify(state.dragStartSnapshot.objects);
+        const afterJson = JSON.stringify(state.scene.objects);
+        if (beforeJson !== afterJson) {
+          nextUndoStack = pushUndoSnapshot(state.undoStack, state.dragStartSnapshot);
+        }
+      }
+      return {
+        isDragging: false,
+        dragStartSnapshot: null,
+        undoStack: nextUndoStack,
+      };
+    });
   },
 
   setCameraMode: (mode) => {
@@ -452,6 +541,10 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
         activePreset: preset,
         selectedId: null,
         isDragging: false,
+        voicePreview: null,
+        voiceHighlightIds: [],
+        undoStack: [],
+        editEpoch: state.editEpoch + 1,
         cameraPreset: 'perspective',
         cameraPresetTick: state.cameraPresetTick + 1,
         issues: state.validator(nextScene),
@@ -490,6 +583,7 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
         return state;
       }
 
+      const nextUndoStack = pushUndoSnapshot(state.undoStack, state.scene);
       const nextScene: ShopScene = {
         ...state.scene,
         objects: state.scene.objects.map((obj) =>
@@ -502,6 +596,10 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
       persistSceneState(state.activePreset, nextScene);
       return {
         scene: nextScene,
+        undoStack: nextUndoStack,
+        voicePreview:
+          state.voicePreview?.objectId === id ? null : state.voicePreview,
+        editEpoch: state.editEpoch + 1,
         issues: state.validator(nextScene),
       };
     });
@@ -576,6 +674,10 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
         scene: freshScene,
         selectedId: null,
         isDragging: false,
+        voicePreview: null,
+        voiceHighlightIds: [],
+        undoStack: pushUndoSnapshot(state.undoStack, state.scene),
+        editEpoch: state.editEpoch + 1,
         issues: state.validator(freshScene),
       };
     });
@@ -587,5 +689,207 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
 
   setLastMediaSource: (source) => {
     set({ lastMediaSource: source });
+  },
+
+  bumpEditEpoch: () => {
+    let nextEpoch = 0;
+    set((state) => {
+      nextEpoch = state.editEpoch + 1;
+      return { editEpoch: nextEpoch };
+    });
+    return nextEpoch;
+  },
+
+  setVoiceHighlightIds: (ids) => {
+    set({ voiceHighlightIds: ids });
+  },
+
+  applyVoicePreview: (
+    objectId,
+    nextPosition,
+    nextRotationY,
+    summary,
+    expectedEpoch
+  ) => {
+    const state = get();
+    if (
+      typeof expectedEpoch === 'number' &&
+      expectedEpoch !== state.editEpoch
+    ) {
+      return {
+        applied: false,
+        stale: true,
+        reason: 'Discarded stale response after user interruption or manual edit.',
+        preview: state.voicePreview,
+      };
+    }
+
+    const target = state.scene.objects.find((obj) => obj.id === objectId);
+    if (!target) {
+      return {
+        applied: false,
+        reason: `Object "${objectId}" not found in scene.`,
+        preview: state.voicePreview,
+      };
+    }
+
+    if (target.locked) {
+      return {
+        applied: false,
+        reason: `"${target.label}" is locked. Unlock it before moving.`,
+        preview: state.voicePreview,
+      };
+    }
+
+    const originalPosition: Vec3 =
+      state.voicePreview?.objectId === objectId
+        ? [...state.voicePreview.originalPosition]
+        : [...target.position];
+    const originalRotationY =
+      state.voicePreview?.objectId === objectId
+        ? state.voicePreview.originalRotationY
+        : target.rotationY;
+
+    const previewPos: Vec3 = [
+      nextPosition[0],
+      nextPosition[1],
+      nextPosition[2],
+    ];
+    const hypotheticalScene = applyPoseToScene(
+      state.scene,
+      objectId,
+      previewPos,
+      nextRotationY
+    );
+    const previewIssues = state.validator(hypotheticalScene);
+    const hasBlockingError = previewIssues.some((i) => i.severity === 'error');
+    const suggestedAlternative = hasBlockingError
+      ? findValidatedAlternative(
+          state.scene,
+          objectId,
+          previewPos,
+          state.validator
+        )
+      : null;
+
+    const nextPreview: VoicePreviewState = {
+      objectId,
+      originalPosition,
+      originalRotationY,
+      previewPosition: previewPos,
+      previewRotationY: nextRotationY,
+      issues: previewIssues,
+      frozen: false,
+      suggestedAlternative,
+      lastActionSummary: summary,
+      epoch: state.editEpoch,
+    };
+
+    set({
+      selectedId: objectId,
+      voicePreview: nextPreview,
+      voiceHighlightIds: [],
+    });
+
+    return {
+      applied: true,
+      preview: nextPreview,
+    };
+  },
+
+  freezeVoicePreview: () => {
+    const state = get();
+    if (!state.voicePreview) {
+      return false;
+    }
+    set({
+      voicePreview: {
+        ...state.voicePreview,
+        frozen: true,
+        lastActionSummary: 'Paused preview for inspection',
+      },
+    });
+    return true;
+  },
+
+  previewSuggestedAlternative: () => {
+    const state = get();
+    const preview = state.voicePreview;
+    if (!preview || !preview.suggestedAlternative) {
+      return {
+        applied: false,
+        reason: 'No suggested alternative is currently available.',
+        preview: state.voicePreview,
+      };
+    }
+
+    const alt = preview.suggestedAlternative;
+    return get().applyVoicePreview(
+      preview.objectId,
+      alt.position,
+      alt.rotationY,
+      `Previewing alternative: ${alt.label}`
+    );
+  },
+
+  commitVoicePreview: () => {
+    const state = get();
+    const preview = state.voicePreview;
+    if (!preview) {
+      return false;
+    }
+
+    const nextUndoStack = pushUndoSnapshot(state.undoStack, state.scene);
+    const nextScene = applyPoseToScene(
+      state.scene,
+      preview.objectId,
+      preview.previewPosition,
+      preview.previewRotationY
+    );
+    persistSceneState(state.activePreset, nextScene);
+
+    set({
+      scene: nextScene,
+      undoStack: nextUndoStack,
+      voicePreview: null,
+      voiceHighlightIds: [],
+      editEpoch: state.editEpoch + 1,
+      issues: state.validator(nextScene),
+    });
+
+    return true;
+  },
+
+  cancelVoicePreview: () => {
+    set((state) => ({
+      voicePreview: null,
+      voiceHighlightIds: [],
+      editEpoch: state.editEpoch + 1,
+    }));
+  },
+
+  undo: () => {
+    const state = get();
+    if (state.undoStack.length === 0) {
+      return false;
+    }
+
+    const previousScene = state.undoStack[state.undoStack.length - 1];
+    const nextUndoStack = state.undoStack.slice(0, -1);
+    const restored = cloneScene(previousScene);
+    persistSceneState(state.activePreset, restored);
+
+    set({
+      scene: restored,
+      undoStack: nextUndoStack,
+      voicePreview: null,
+      voiceHighlightIds: [],
+      isDragging: false,
+      dragStartSnapshot: null,
+      editEpoch: state.editEpoch + 1,
+      issues: state.validator(restored),
+    });
+
+    return true;
   },
 }));

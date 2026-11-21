@@ -26,6 +26,8 @@ import {
 export interface SceneObjectProps {
   object: SceneObjectType;
   isSelected: boolean;
+  isVoiceHighlighted?: boolean;
+  isPreviewOrigin?: boolean;
   hasError: boolean;
   hasWarning: boolean;
   interactive: boolean;
@@ -1185,6 +1187,8 @@ function SelectionHalo({
 export function SceneObject({
   object,
   isSelected,
+  isVoiceHighlighted = false,
+  isPreviewOrigin = false,
   hasError,
   hasWarning,
   interactive,
@@ -1340,9 +1344,23 @@ export function SceneObject({
   };
 
   const glbSpec = useMemo(() => resolveGlbForObject(object), [object]);
-  const showHalo = isSelected || hasError;
-  const haloColor = hasError ? '#ef4444' : '#0ea5e9';
-  const ringColor = hasError ? '#ef4444' : hasWarning ? '#f59e0b' : '#0ea5e9';
+  const showHalo = isSelected || hasError || isVoiceHighlighted || isPreviewOrigin;
+  const haloColor = hasError
+    ? '#ef4444'
+    : isVoiceHighlighted
+      ? '#a855f7'
+      : isPreviewOrigin
+        ? '#f59e0b'
+        : '#0ea5e9';
+  const ringColor = hasError
+    ? '#ef4444'
+    : isVoiceHighlighted
+      ? '#c084fc'
+      : isPreviewOrigin
+        ? '#fbbf24'
+        : hasWarning
+          ? '#f59e0b'
+          : '#0ea5e9';
 
   return (
     <group
