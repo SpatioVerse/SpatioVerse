@@ -1148,11 +1148,12 @@ function MediaIntakeDialogContent({
           </div>
         </div>
 
-        {/* Scrollable Form Body */}
+        {/* Form Wrapper: scrollable body + pinned footer */}
         <form
           onSubmit={handleSubmit}
-          className="flex flex-1 flex-col gap-5 overflow-y-auto px-6 py-5"
+          className="flex min-h-0 flex-1 flex-col overflow-hidden"
         >
+          <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5">
           {/* Three Interactive Source Tabs */}
           <div
             className="grid grid-cols-3 gap-1.5 rounded-2xl border border-white/10 bg-white/5 p-1"
@@ -1810,8 +1811,10 @@ function MediaIntakeDialogContent({
             </div>
           )}
 
-          {/* Footer Action Row */}
-          <div className="flex items-center justify-end gap-2.5 border-t border-white/10 pt-3">
+          </div>
+
+          {/* Pinned Footer Action Row */}
+          <div className="flex shrink-0 items-center justify-end gap-2.5 border-t border-white/10 bg-zinc-950/95 px-6 py-3.5">
             <button
               type="button"
               onClick={onClose}

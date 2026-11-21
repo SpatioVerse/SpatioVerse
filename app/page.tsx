@@ -31,6 +31,7 @@ import {
 import type { WalkerPose } from '@/components/FirstPersonRig';
 import { MediaIntakeModal } from '@/components/MediaIntakeModal';
 import { ProductPanel } from '@/components/ProductPanel';
+import { ReplaceObjectBar } from '@/components/ReplaceObjectBar';
 import { SceneToolbar } from '@/components/SceneToolbar';
 import { SetupWizard } from '@/components/SetupWizard';
 import { validateScene } from '@/lib/constraints';
@@ -525,6 +526,37 @@ export default function HomePage() {
       const patch = computeReplacementPatch(currentObj, product, verifiedSize);
       updateObject(objectId, patch);
       selectObject(objectId);
+
+      // Vision-based product photo -> closest 3D GLB + sampled color match
+      const { setVisionModelOverride } = useSceneStore.getState();
+      setVisionModelOverride(objectId, null);
+      void fetch('/api/match-model', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: product.title,
+          imageUrl: product.imageUrl,
+        }),
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((match) => {
+          if (!match || typeof match.glbKey !== 'string') return;
+          setVisionModelOverride(objectId, {
+            glbKey: match.glbKey,
+            dominantColorHex: match.dominantColorHex,
+            overrideAlbedo: Boolean(match.overrideAlbedo),
+          });
+          if (!verifiedSize && Array.isArray(match.estimatedSize) && match.estimatedSize.length === 3) {
+            updateObject(objectId, {
+              kind: match.inferredKind ?? patch.kind,
+              size: match.estimatedSize as Vec3,
+            });
+          }
+        })
+        .catch(() => {
+          // Graceful fallback: keep deterministic catalog match
+        });
+
       setSwapToast({
         objectId,
         title: product.title,
@@ -1240,8 +1272,9 @@ export default function HomePage() {
           </button>
         </div>
       ) : (
-        /* Bottom-Center Orbit Mode HUD: Violation Alert Pill + Budget + Review Purchases + AI Provenance */
-        <div className="pointer-events-none fixed bottom-3 left-1/2 z-20 flex max-w-[95vw] -translate-x-1/2 flex-col items-center gap-2">
+        /* Bottom-Center Orbit Mode HUD: Voice/Text Replace Bar + Violation Alert + Budget + Review Purchases + AI Provenance */
+        <div className="pointer-events-none fixed bottom-3 left-1/2 z-20 flex w-full max-w-[95vw] -translate-x-1/2 flex-col items-center gap-2">
+          <ReplaceObjectBar selectedObject={selectedObject} />
           {errorIssues.length > 0 && (
             <button
               type="button"

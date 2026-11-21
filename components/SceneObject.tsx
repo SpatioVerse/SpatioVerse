@@ -26,6 +26,7 @@ import {
   getFlutedOakTextures,
   getTravertineTextures,
 } from '@/lib/textures';
+import { useSceneStore } from '@/store/useSceneStore';
 
 export interface SceneObjectProps {
   object: SceneObjectType;
@@ -97,6 +98,35 @@ interface GlbNormalizedModelProps {
   targetSize: [number, number, number];
   fitMode: GlbModelSpec['fitMode'];
   yOffset?: number;
+  tintLabel?: string;
+  explicitTint?: { hex: string; overrideAlbedo: boolean };
+}
+
+const LABEL_COLOR_TINTS: Array<[RegExp, string, boolean?]> = [
+  [/\b(pure\s*white|crisp\s*white|snow\s*white|white|boucl[eé])\b/i, '#f3f1ec', true],
+  [/\b(cream|ivory|off[- ]?white|linen|alabaster)\b/i, '#ebe4d6', true],
+  [/olive|moss|forest/i, '#6b7750'],
+  [/sage|grey[- ]?green|gray[- ]?green|eucalyptus/i, '#7f9282'],
+  [/mustard|ochre|gold|amber/i, '#c99738'],
+  [/rust|terracotta|burnt|cognac/i, '#a95836'],
+  [/emerald|green/i, '#4d7a60'],
+  [/navy|indigo|slate\s*blue|blue/i, '#3c4f6b'],
+  [/beige|sand|oatmeal/i, '#d9ccb8'],
+  [/charcoal|black|espresso/i, '#343230'],
+  [/grey|gray|taupe/i, '#8c877f'],
+  [/blush|rose|pink/i, '#c79b93'],
+];
+
+function resolveTintSpec(
+  label?: string
+): { hex: string; overrideAlbedo: boolean } | null {
+  if (!label) return null;
+  for (const [pattern, hex, overrideAlbedo] of LABEL_COLOR_TINTS) {
+    if (pattern.test(label)) {
+      return { hex, overrideAlbedo: Boolean(overrideAlbedo) };
+    }
+  }
+  return null;
 }
 
 function GlbNormalizedModel({
@@ -104,19 +134,44 @@ function GlbNormalizedModel({
   targetSize,
   fitMode,
   yOffset = 0,
+  tintLabel,
+  explicitTint,
 }: GlbNormalizedModelProps) {
   const gltf = useGLTF(url);
   const [targetW, targetH, targetD] = targetSize;
 
-  const { sceneClone, scale, offset } = useMemo(() => {
+  const { sceneClone, scaleVec, offset } = useMemo(() => {
     const cloned = gltf.scene.clone(true);
+    const tintSpec = explicitTint ?? resolveTintSpec(tintLabel);
+    const tintColor = tintSpec ? new THREE.Color(tintSpec.hex) : null;
 
-    // Enable gallery shadows and tame embedded GLB punctual lights so
-    // the boutique's architectural lighting stays warm and balanced.
     cloned.traverse((node) => {
       if (node instanceof THREE.Mesh) {
         node.castShadow = true;
         node.receiveShadow = true;
+        if (tintColor && tintSpec && node.material) {
+          const applyTint = (mat: THREE.Material): THREE.Material => {
+            if (
+              mat instanceof THREE.MeshStandardMaterial ||
+              mat instanceof THREE.MeshPhysicalMaterial
+            ) {
+              const copy = mat.clone();
+              if (tintSpec.overrideAlbedo) {
+                copy.map = null;
+                copy.color.copy(tintColor);
+                copy.roughness = Math.max(copy.roughness, 0.82);
+                copy.needsUpdate = true;
+              } else {
+                copy.color.lerp(tintColor, 0.62);
+              }
+              return copy;
+            }
+            return mat;
+          };
+          node.material = Array.isArray(node.material)
+            ? node.material.map(applyTint)
+            : applyTint(node.material);
+        }
       } else if (node instanceof THREE.Light) {
         node.visible = false;
         node.intensity = 0;
@@ -124,47 +179,73 @@ function GlbNormalizedModel({
     });
 
     cloned.updateMatrixWorld(true);
-    const box = new THREE.Box3().setFromObject(cloned);
+    const rawBox = new THREE.Box3().setFromObject(cloned);
     const rawSize = new THREE.Vector3();
-    const rawCenter = new THREE.Vector3();
-    box.getSize(rawSize);
-    box.getCenter(rawCenter);
+    rawBox.getSize(rawSize);
 
-    const sx = rawSize.x > 1e-4 ? rawSize.x : 1;
-    const sy = rawSize.y > 1e-4 ? rawSize.y : 1;
-    const sz = rawSize.z > 1e-4 ? rawSize.z : 1;
+    const rawWiderThanDeep = rawSize.x > rawSize.z * 1.2;
+    const rawDeeperThanWide = rawSize.z > rawSize.x * 1.2;
+    const targetWiderThanDeep = targetW > targetD * 1.2;
+    const targetDeeperThanWide = targetD > targetW * 1.2;
+    if (
+      (rawWiderThanDeep && targetDeeperThanWide) ||
+      (rawDeeperThanWide && targetWiderThanDeep)
+    ) {
+      cloned.rotation.y += Math.PI / 2;
+      cloned.updateMatrixWorld(true);
+    }
 
-    let uniformScale: number;
+    const box = new THREE.Box3().setFromObject(cloned);
+    const size = new THREE.Vector3();
+    const center = new THREE.Vector3();
+    box.getSize(size);
+    box.getCenter(center);
+
+    const sx = size.x > 1e-4 ? size.x : 1;
+    const sy = size.y > 1e-4 ? size.y : 1;
+    const sz = size.z > 1e-4 ? size.z : 1;
+
+    let finalScale: [number, number, number];
     if (fitMode === 'height') {
-      // Scale primarily to target height while keeping arched overhangs sane
       const byHeight = targetH / sy;
       const byWidth = (targetW * 1.55) / sx;
       const byDepth = (targetD * 1.55) / sz;
-      uniformScale = Math.min(byHeight, byWidth, byDepth);
+      const u = Math.min(byHeight, byWidth, byDepth);
+      const safeU = Number.isFinite(u) && u > 0 ? u : 1;
+      finalScale = [safeU, safeU, safeU];
+    } else if (fitMode === 'fill') {
+      const rx = targetW / sx;
+      const ry = targetH / sy;
+      const rz = targetD / sz;
+      const base = Math.cbrt(Math.max(1e-6, rx * ry * rz));
+      const clampAxis = (r: number) =>
+        Math.max(base * 0.72, Math.min(base * 1.38, r));
+      finalScale = [
+        Math.min(rx, clampAxis(rx)),
+        Math.min(ry, clampAxis(ry)),
+        Math.min(rz, clampAxis(rz)),
+      ];
     } else {
-      uniformScale = Math.min(targetW / sx, targetH / sy, targetD / sz);
+      const u = Math.min(targetW / sx, targetH / sy, targetD / sz);
+      const safeU = Number.isFinite(u) && u > 0 ? u : 1;
+      finalScale = [safeU, safeU, safeU];
     }
 
-    if (!Number.isFinite(uniformScale) || uniformScale <= 0) {
-      uniformScale = 1;
-    }
-
-    // Center on X/Z and place exact bounding box min.y flush at y = yOffset
     const computedOffset: [number, number, number] = [
-      -rawCenter.x * uniformScale,
-      -box.min.y * uniformScale + yOffset,
-      -rawCenter.z * uniformScale,
+      -center.x * finalScale[0],
+      -box.min.y * finalScale[1] + yOffset,
+      -center.z * finalScale[2],
     ];
 
     return {
       sceneClone: cloned,
-      scale: uniformScale,
+      scaleVec: finalScale,
       offset: computedOffset,
     };
-  }, [gltf.scene, targetW, targetH, targetD, fitMode, yOffset]);
+  }, [gltf.scene, targetW, targetH, targetD, fitMode, yOffset, tintLabel, explicitTint]);
 
   return (
-    <group position={offset} scale={scale}>
+    <group position={offset} scale={scaleVec}>
       <primitive object={sceneClone} />
     </group>
   );
@@ -1871,6 +1952,16 @@ export function SceneObject({
         ? '#f59e0b'
         : '#0ea5e9';
 
+  const visionOverride = useSceneStore(
+    (state) => state.visionModelOverrides[object.id]
+  );
+  const effectiveGlbSpec: GlbModelSpec | null = visionOverride
+    ? {
+        url: GLB_MODEL_PATHS[visionOverride.glbKey],
+        fitMode: visionOverride.glbKey === 'lamp' ? 'height' : 'fill',
+      }
+    : glbSpec;
+
   return (
     <group
       position={object.position}
@@ -1881,17 +1972,26 @@ export function SceneObject({
       onPointerOut={handlePointerOut}
     >
       <group ref={meshGroupRef}>
-        {glbSpec ? (
+        {effectiveGlbSpec ? (
           <GlbErrorBoundary
-            resetKey={`${object.id}:${glbSpec.url}`}
+            resetKey={`${object.id}:${effectiveGlbSpec.url}`}
             fallback={<ParametricFixture object={object} />}
           >
             <Suspense fallback={<ParametricFixture object={object} />}>
               <GlbNormalizedModel
-                url={glbSpec.url}
+                url={effectiveGlbSpec.url}
                 targetSize={object.size}
-                fitMode={glbSpec.fitMode}
-                yOffset={glbSpec.yOffset ?? 0}
+                fitMode={effectiveGlbSpec.fitMode}
+                yOffset={effectiveGlbSpec.yOffset ?? 0}
+                tintLabel={object.product?.title ?? object.label}
+                explicitTint={
+                  visionOverride
+                    ? {
+                        hex: visionOverride.dominantColorHex,
+                        overrideAlbedo: visionOverride.overrideAlbedo,
+                      }
+                    : undefined
+                }
               />
             </Suspense>
           </GlbErrorBoundary>

@@ -87,7 +87,7 @@ export class GeminiServiceError extends Error {
  */
 export function logGeminiEvent(event: {
   requestId: string;
-  route: '/api/analyze' | '/api/plan' | '/api/replace';
+  route: '/api/analyze' | '/api/plan' | '/api/replace' | '/api/match-model';
   modelId: string;
   stage: string;
   durationMs?: number;
@@ -2202,4 +2202,372 @@ export async function replaceObjectInScene(
       modelAttempted: PLAN_MODEL_ID,
     });
   }
+}
+
+// ============================================================================
+// 4. IMAGE-BASED PRODUCT -> 3D GLB CATALOG MATCHER (/api/match-model)
+// ============================================================================
+
+export const GLB_CATALOG_KEYS = [
+  'sofaModern',
+  'sofaMinimal',
+  'sofaWood',
+  'sofa',
+  'daybed',
+  'chairModern',
+  'chairMidcentury',
+  'armchairClassic',
+  'chairGreen',
+  'chairWood',
+  'chair',
+  'ottoman',
+  'bench',
+  'stool',
+  'stoolBarRound',
+  'stoolMetal',
+  'table',
+  'tableRound',
+  'tableRoundWood',
+  'tableRoundAccent',
+  'tableSide',
+  'tableSideTall',
+  'tableSmallWood',
+  'tableCoffeeModern2',
+  'tableIndustrial',
+  'tableWoodClassic',
+  'tableDining',
+  'tableConsole',
+  'deskMetal',
+  'cartCoffee',
+  'cartIndustrial',
+  'wardrobe',
+  'cabinet',
+  'cabinetPainted',
+  'dresser',
+  'nightstand',
+  'bookshelf',
+  'shelf',
+  'shelfWallUnit',
+  'rack',
+  'rackSteelTall',
+  'bed',
+  'lamp',
+  'lampTable',
+  'mirror',
+  'plant',
+] as const;
+
+export type GlbCatalogKey = (typeof GLB_CATALOG_KEYS)[number];
+
+export const MatchProductModelRequestSchema = z.object({
+  title: z.string().min(1),
+  imageUrl: z.string().url().optional(),
+});
+
+export type MatchProductModelRequest = z.infer<
+  typeof MatchProductModelRequestSchema
+>;
+
+const RawMatchModelOutputSchema = z.object({
+  glbKey: z.enum(GLB_CATALOG_KEYS),
+  inferredKind: SceneKindSchema,
+  dominantColorHex: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+  overrideAlbedo: z.boolean(),
+  estimatedSize: z.tuple([
+    z.number().positive(),
+    z.number().positive(),
+    z.number().positive(),
+  ]),
+  confidence: z.enum(['high', 'medium', 'low']),
+  reason: z.string(),
+});
+
+export interface MatchProductModelResult {
+  glbKey: GlbCatalogKey;
+  inferredKind: SceneObject['kind'];
+  dominantColorHex: string;
+  overrideAlbedo: boolean;
+  estimatedSize: Vec3;
+  confidence: 'high' | 'medium' | 'low';
+  reason: string;
+  usedImage: boolean;
+  decisionCategory?: string;
+  decisionConfidence?: number;
+  decisionModelUsed?: string;
+  modelUsed: string;
+  requestId: string;
+}
+
+const MATCH_MODEL_RESPONSE_SCHEMA = {
+  type: 'object',
+  properties: {
+    glbKey: {
+      type: 'string',
+      enum: [...GLB_CATALOG_KEYS],
+      description:
+        'Closest matching 3D furniture silhouette from our 28-model PBR GLB catalog based on the product photo.',
+    },
+    inferredKind: {
+      type: 'string',
+      enum: ['shelf', 'counter', 'table', 'rack', 'lamp', 'plant', 'art'],
+    },
+    dominantColorHex: {
+      type: 'string',
+      description:
+        '6-digit hex color (e.g. "#f2efe9", "#5c3b22", "#6b7750") matching the primary upholstery/wood/metal finish visible in the product photo.',
+    },
+    overrideAlbedo: {
+      type: 'boolean',
+      description:
+        'True if the product is white, cream, ivory, pastel, or light solid fabric/finish so dark textures do not bleed through; false for natural wood grain or dark leather.',
+    },
+    estimatedSize: {
+      type: 'array',
+      items: { type: 'number' },
+      minItems: 3,
+      maxItems: 3,
+      description:
+        'Realistic [widthX, heightY, depthZ] in meters visually estimated from the product photo.',
+    },
+    confidence: {
+      type: 'string',
+      enum: ['high', 'medium', 'low'],
+    },
+    reason: {
+      type: 'string',
+      description: 'Short explanation of why this 3D shape and color were chosen.',
+    },
+  },
+  required: [
+    'glbKey',
+    'inferredKind',
+    'dominantColorHex',
+    'overrideAlbedo',
+    'estimatedSize',
+    'confidence',
+    'reason',
+  ],
+};
+
+async function runDecisionApiCategoryPick(params: {
+  title: string;
+  imagePart: { inlineData: { data: string; mimeType: string } } | null;
+}): Promise<{ category: string; confidence: number } | null> {
+  const apiKey =
+    process.env.GEMINI_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim();
+  if (!apiKey) return null;
+
+  try {
+    const inputPayload = params.imagePart
+      ? [
+          {
+            type: 'image',
+            data: params.imagePart.inlineData.data,
+            mime_type: params.imagePart.inlineData.mimeType,
+          },
+          { type: 'text', text: `Product title: ${params.title}` },
+        ]
+      : `Product title: ${params.title}`;
+
+    const res = await fetch(
+      'https://generativelanguage.googleapis.com/v1beta/decisions',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey,
+        },
+        body: JSON.stringify({
+          model: 'gemini-decision-1',
+          input: inputPayload,
+          questions: {
+            furniture_group: {
+              type: 'choice',
+              instructions:
+                'Which furniture silhouette group best matches this product photo?',
+              criteria: {
+                round_table: 'Round or circular end table, coffee table, or pedestal table',
+                rect_table: 'Rectangular coffee table, dining table, console table, desk, or rolling cart',
+                sofa_lounge: 'Sofa, couch, loveseat, sectional, or daybed',
+                chair_stool: 'Armchair, lounge chair, dining chair, bar stool, ottoman, or bench',
+                storage_shelf: 'Wardrobe, cabinet, dresser, nightstand, bookshelf, display shelf, or rack',
+                bedroom: 'Bed frame or mattress',
+                lighting_decor: 'Floor lamp, table/desk lamp, mirror, or potted plant',
+              },
+            },
+          },
+        }),
+        signal: AbortSignal.timeout(6000),
+      }
+    );
+
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      answers?: {
+        furniture_group?: { choice?: string; confidence?: number };
+      };
+    };
+    const ans = data.answers?.furniture_group;
+    if (ans?.choice) {
+      return {
+        category: ans.choice,
+        confidence: typeof ans.confidence === 'number' ? ans.confidence : 0.8,
+      };
+    }
+  } catch {
+    // Graceful fallback to direct vision selection
+  }
+  return null;
+}
+
+/**
+ * Inspects a Shopify product's actual photo using `gemini-decision-1` (calibrated
+ * zero-token category choice) + Gemini Vision (`gemini-4-hydrogen`) to pick the
+ * closest 3D PBR GLB model from our 46-model catalog and sample its exact color.
+ */
+export async function matchProductImageToGlb(
+  input: MatchProductModelRequest,
+  options: PlanGenerationOptions
+): Promise<MatchProductModelResult> {
+  const { requestId, timeoutMs = 25_000 } = options;
+  const ai =
+    options.clientOverride ?? getGeminiClient(requestId, PLAN_MODEL_ID);
+  const startMs = Date.now();
+
+  let imagePart: { inlineData: { data: string; mimeType: string } } | null = null;
+  if (input.imageUrl) {
+    const safeUrl = isSafePublicHttpsUrl(input.imageUrl);
+    if (safeUrl) {
+      try {
+        const res = await withTimeout(
+          fetch(safeUrl.toString()),
+          5_000,
+          requestId,
+          PLAN_MODEL_ID,
+          'Product image fetch'
+        );
+        if (res.ok) {
+          const buf = Buffer.from(await res.arrayBuffer());
+          const mime = normalizeMediaMimeType(
+            res.headers.get('content-type') ?? 'image/jpeg',
+            safeUrl.pathname
+          );
+          if (buf.byteLength > 0 && buf.byteLength <= 6 * 1024 * 1024 && mime.startsWith('image/')) {
+            imagePart = {
+              inlineData: {
+                data: buf.toString('base64'),
+                mimeType: mime,
+              },
+            };
+          }
+        }
+      } catch {
+        // Non-fatal: fall back to title-only classification if CDN image is unreachable
+      }
+    }
+  }
+
+  // Stage 1: Fast zero-output-token calibrated choice via gemini-decision-1
+  const decision = options.clientOverride
+    ? null
+    : await runDecisionApiCategoryPick({
+        title: input.title,
+        imagePart,
+      });
+
+  logGeminiEvent({
+    requestId,
+    route: '/api/match-model',
+    modelId: PLAN_MODEL_ID,
+    stage: 'start',
+    meta: {
+      usedImage: Boolean(imagePart),
+      decisionCategory: decision?.category,
+      decisionConfidence: decision?.confidence,
+    },
+  });
+
+  const systemInstruction = [
+    'You are SpaceStage Visual 3D Asset Matcher.',
+    'Look closely at the product PHOTO (primary ground truth) and title, and pick the single closest 3D GLB silhouette key from our 46-model catalog:',
+    '- Round Tables: tableRoundWood (round wood end/side table with legs/shelf), tableRoundAccent (compact round accent/pedestal table), tableRound (low round coffee table)',
+    '- Rectangular Tables/Desks/Carts: tableSide (square/compact side table), tableSideTall (tall narrow side table), tableSmallWood (small wood table), table (modern coffee table), tableCoffeeModern2 (contemporary coffee table 2), tableIndustrial (industrial metal+wood coffee table), tableWoodClassic (classic rectangular wood table), tableDining (large dining table), tableConsole (narrow hallway/display console), deskMetal (office/display desk), cartCoffee (rolling coffee/display cart), cartIndustrial (industrial storage cart)',
+    '- Sofas: sofaMinimal (plush/low/boucle/white/minimal), sofaModern (clean modern), sofaWood (wood-framed sofa), sofa (tufted/classic leather), daybed',
+    '- Chairs/Stools: chairModern (sculptural modern armchair), chairMidcentury (wood-frame lounge), armchairClassic (wingback/tufted), chairGreen (upholstered green chair), chairWood (wooden dining/cafe chair), chair (general), ottoman, bench, stool (wood stool), stoolBarRound (round bar stool), stoolMetal (metal stool)',
+    '- Storage/Shelving: wardrobe (tall enclosed wardrobe/armoire), cabinet (modern wood cabinet/credenza), cabinetPainted (painted cabinet), dresser (chest of drawers), nightstand, bookshelf (tall bookcase), shelf (open wood display shelf), shelfWallUnit (modular shelf unit), rack (steel frame shelf), rackSteelTall (tall steel rack)',
+    '- Bedroom/Lighting/Decor: bed, lamp (standing floor lamp), lampTable (desk/table lamp), mirror, plant',
+    decision
+      ? `Calibrated Decisions API (gemini-decision-1) group prior: "${decision.category}" (confidence ${(decision.confidence * 100).toFixed(0)}%).`
+      : '',
+    'Sample the exact primary visible hex color (`dominantColorHex`) from the photo, and set `overrideAlbedo: true` for white/cream/ivory/light-fabric finishes.',
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const parts: Array<
+    { inlineData: { data: string; mimeType: string } } | { text: string }
+  > = [];
+  if (imagePart) parts.push(imagePart);
+  parts.push({
+    text: `Match this product to the closest 3D GLB catalog asset and sample its visible color & proportions. Product title: "${input.title}"`,
+  });
+
+  const response = await withTimeout(
+    ai.models.generateContent({
+      model: PLAN_MODEL_ID,
+      contents: [{ role: 'user', parts }],
+      config: {
+        systemInstruction,
+        responseMimeType: 'application/json',
+        responseSchema: MATCH_MODEL_RESPONSE_SCHEMA,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        temperature: 0.1,
+      },
+    }),
+    timeoutMs,
+    requestId,
+    PLAN_MODEL_ID,
+    'Product image to 3D GLB match'
+  );
+
+  const rawText = response.text?.trim();
+  if (!rawText) {
+    throw new GeminiServiceError({
+      code: 'INVALID_MODEL_JSON',
+      message: 'Vision matcher returned empty response.',
+      status: 502,
+      requestId,
+      modelAttempted: PLAN_MODEL_ID,
+    });
+  }
+
+  const parsed = RawMatchModelOutputSchema.parse(JSON.parse(rawText));
+
+  logGeminiEvent({
+    requestId,
+    route: '/api/match-model',
+    modelId: PLAN_MODEL_ID,
+    stage: 'complete',
+    durationMs: Date.now() - startMs,
+    meta: {
+      glbKey: parsed.glbKey,
+      usedImage: Boolean(imagePart),
+      decisionCategory: decision?.category,
+      confidence: parsed.confidence,
+    },
+  });
+
+  return {
+    ...parsed,
+    usedImage: Boolean(imagePart),
+    ...(decision
+      ? {
+          decisionCategory: decision.category,
+          decisionConfidence: decision.confidence,
+          decisionModelUsed: 'gemini-decision-1',
+        }
+      : {}),
+    modelUsed: PLAN_MODEL_ID,
+    requestId,
+  };
 }

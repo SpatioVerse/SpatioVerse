@@ -4,6 +4,7 @@ import {
   flagshipScene,
   type ScenePresetKey,
 } from '@/fixtures/demoScene';
+import { GLB_MODEL_PATHS } from '@/lib/modelCatalog';
 import { validateScene } from '@/lib/constraints';
 import {
   ShopSceneSchema,
@@ -80,6 +81,12 @@ function persistSceneState(activePreset: ScenePresetKey, scene: ShopScene): void
   }
 }
 
+export type VisionModelOverride = {
+  glbKey: keyof typeof GLB_MODEL_PATHS;
+  dominantColorHex: string;
+  overrideAlbedo: boolean;
+};
+
 export interface SceneStoreState {
   scene: ShopScene;
   activePreset: ScenePresetKey;
@@ -97,6 +104,7 @@ export interface SceneStoreState {
   rightPanelTab: RightPanelTab;
   aiTrace: AiRunTrace | null;
   lastMediaSource: MediaSourceSummary | null;
+  visionModelOverrides: Record<string, VisionModelOverride>;
 
   hydrateFromStorage: () => void;
   selectObject: (id: string | null) => void;
@@ -119,6 +127,10 @@ export interface SceneStoreState {
   setRightPanelTab: (tab: RightPanelTab) => void;
   setAiTrace: (trace: AiRunTrace | null) => void;
   setLastMediaSource: (source: MediaSourceSummary | null) => void;
+  setVisionModelOverride: (
+    id: string,
+    override: VisionModelOverride | null
+  ) => void;
 }
 
 const initialScene = cloneScene(flagshipScene);
@@ -140,6 +152,7 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
   rightPanelTab: 'inspect',
   aiTrace: null,
   lastMediaSource: null,
+  visionModelOverrides: {},
 
   hydrateFromStorage: () => {
     if (typeof window === 'undefined') {
@@ -429,5 +442,17 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
 
   setLastMediaSource: (source) => {
     set({ lastMediaSource: source });
+  },
+
+  setVisionModelOverride: (id, override) => {
+    set((state) => {
+      const next = { ...state.visionModelOverrides };
+      if (override) {
+        next[id] = override;
+      } else {
+        delete next[id];
+      }
+      return { visionModelOverrides: next };
+    });
   },
 }));
