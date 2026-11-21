@@ -64,8 +64,8 @@ flowchart LR
 | `fixtures/demoScene.ts` | Offline-ready `flagshipScene` (`24×18 ft`) and `compactDemoScene` (`12×10 ft`) presets |
 | `fixtures/eval-cases.json` | `8` independent small-store evaluation scenarios (bounds, collisions, doorway, budget, dimensions, owned reuse, no-drilling, alternate entrance) |
 | `app/page.tsx`, `components/SpaceCanvas.tsx`, `components/BoutiqueEnvironment.tsx`, `components/SceneObject.tsx`, `components/FirstPersonRig.tsx`, `components/SceneToolbar.tsx`, `components/MediaIntakeModal.tsx`, `store/useSceneStore.ts` | Interactive 3D boutique editor, GLB/parametric assets, orbit & walkthrough cameras, drag/rotate controls, live constraint outlines |
-| `lib/gemini.ts`, `app/api/analyze/route.ts`, `app/api/plan/route.ts` | Server-side `@google/genai` integrations for `gemini-4-hydrogen` and `gemini-4-neon` *(on branch `akarsh_dev`, pending merge to `main`)* |
-| `lib/constraints.ts` | Deterministic SAT oriented-bounding-box, walkway, no-drilling, dimension-warning & budget validator *(on branch `akarsh_dev`, pending merge to `main`)* |
+| `lib/gemini.ts`, `app/api/analyze/route.ts`, `app/api/plan/route.ts` | Server-side `@google/genai` integrations for `gemini-4-hydrogen` and `gemini-4-neon` |
+| `lib/constraints.ts` | Deterministic SAT oriented-bounding-box, walkway, no-drilling, dimension-warning & budget validator |
 | `lib/shopify.ts`, `app/api/products/route.ts`, `app/api/cart/route.ts` | Server-side Shopify Shop MCP JSON-RPC 2.0 client (`2026-07-28`), catalog normalization & per-merchant cart handoff |
 | `components/SetupWizard.tsx`, `components/ProductPanel.tsx` | Controlled camera/file onboarding wizard and live Shopify variant/replacement inspector |
 | `tests/constraints.test.ts` | Automated schema & `validateScene` test suite across all `8` scenarios in `fixtures/eval-cases.json` |
@@ -165,9 +165,8 @@ Covers `8` independent small-store test cases in centered meters (`eval-01-fits`
 
 | Suite | Branch / Target | Cases | Passed | Failed | Explicit `TODO` | Run Time | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Shared `ShopSceneSchema` & `$0` Owned-Budget Contract | `divyansh2` (`main` base `efa023b`) | `2` suites (`8` scenarios + `2` presets) | `2` | `0` | `0` | `433 ms` (`10.3 ms` suite) | Measured via `npx tsx --tsconfig tsconfig.json --test tests/constraints.test.ts` |
-| `validateScene` (`lib/constraints.ts`) on `divyansh2` pre-merge | `divyansh2` (before `akarsh_dev` merge) | `11` (`8` scenarios + `3` boundary/preset checks) | `0` | `0` | `11` | `433 ms` (`1.7 ms` suite) | Marked explicit `TODO` until `lib/constraints.ts` merges to `main` (no fabricated passes) |
-| `validateScene` (`lib/constraints.ts`) cross-branch check | Verified against `origin/akarsh_dev` (`afaa6a9`) | `13` total (`2` schema + `8` scenarios + `3` boundary/preset) | `13` | `0` | `0` | `431 ms` (`44.4 ms` validator) | Auto-activates and passes `13/13` as soon as `akarsh_dev` merges into `main` |
+| `tests/constraints.test.ts` (`fixtures/eval-cases.json` + presets) | `main` (Vitest) | `13` (`2` schema + `8` scenarios + `3` boundary/preset) | `13` | `0` | `0` | `~734 ms` (full `npm test`) | Verifies `ShopSceneSchema`, `$0` owned budget math, `validateScene`, and `evaluateScene` |
+| Full Repository Automated Suite (`npm test`) | `main` (`3` test files) | `30` (`tests/constraints.test.ts` + `lib/constraints.test.ts` + `app/api/analyze/analyze.test.ts`) | `30` | `0` | `0` | `734 ms` | Measured via `vitest run` on integrated `main` |
 
 ### 7B. End-to-End Model & Commerce Evaluation (Fill Only From Real Traces)
 
@@ -187,7 +186,6 @@ Covers `8` independent small-store test cases in centered meters (`eval-01-fits`
 2. **Illustrative 3D Geometry vs. Physical Specs:** Generic parametric meshes and bundled GLB assets (`chair.glb`, `lamp.glb`, `plant.glb`, `vase.glb`) represent fixtures visually in 3D. Physical clearance accuracy depends on matching `SceneObject.size` to verified merchant specifications.
 3. **Geometric & Budget Rules — Not Building-Code Certification:** The constraint validator checks room bounds, 2D rotated-rectangle + vertical overlaps, a `3 ft` (`0.9144 m`) entrance/walkway rule, `noDrilling` mounting heuristics, and integer-cent purchase budgets. It does **not** certify ADA accessibility, fire egress, structural load, or municipal building codes.
 4. **Merchant-Specific Shopify Carts:** Cross-merchant selections cannot be combined into a single Shopify cart URL; `/api/cart` groups items by `sellerDomain` into separate merchant handoffs. Where individual merchants block anonymous MCP cart creation, SpaceStage explicitly reports the limitation and provides the verified `productUrl`.
-5. **Branch Integration Status on `divyansh2`:** This branch is cut cleanly from `main` (which currently includes the 3D studio, `lib/schema.ts`, `fixtures/demoScene.ts`, and Shopify Shop MCP routes/components) and touches **only** `fixtures/eval-cases.json`, `tests/constraints.test.ts`, and `README.md`. Until `akarsh_dev` (`lib/gemini.ts`, `lib/constraints.ts`, `/api/analyze`, `/api/plan`) is merged into `main`, `tests/constraints.test.ts` reports `lib/constraints.ts` checks as explicit `TODO`s rather than inventing passing results.
 
 ---
 
