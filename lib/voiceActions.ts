@@ -157,7 +157,7 @@ export const VoiceActionSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('draft_design_prompt'),
     prompt: z.string().min(1),
-    mode: z.enum(['redesign', 'add', 'replace']).default('redesign'),
+    mode: z.enum(['redesign', 'add', 'replace']).default('replace'),
     style: z.string().optional(),
     budgetDollars: z.number().nonnegative().optional(),
     keepObjectIds: z.array(z.string().min(1)).optional(),

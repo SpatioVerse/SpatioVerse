@@ -613,9 +613,20 @@ export function executeVoiceAction(
     }
 
     case 'draft_design_prompt': {
+      const promptText = action.prompt.trim();
+      const wantsWholeRoom =
+        /\b(whole\s+room|entire\s+room|whole\s+layout|full\s+layout|entire\s+layout|redesign\s+(the\s+|my\s+)?room|restyle\s+(the\s+|my\s+)?room|replace\s+the\s+whole|change\s+the\s+whole|minimalist\s+look|decorative\s+look|start\s+fresh)\b/i.test(
+          promptText
+        );
+      let safeMode: 'redesign' | 'add' | 'replace' = action.mode;
+      if (safeMode === 'redesign' && !wantsWholeRoom) {
+        safeMode = /\b(add|place|put|insert|bring\s+in)\b/i.test(promptText)
+          ? 'add'
+          : 'replace';
+      }
       store.setDraftedDesignPrompt({
-        prompt: action.prompt.trim(),
-        mode: action.mode,
+        prompt: promptText,
+        mode: safeMode,
         style: action.style,
         budgetDollars: action.budgetDollars,
         keepObjectIds: action.keepObjectIds,
@@ -625,7 +636,7 @@ export function executeVoiceAction(
       return {
         ok: true,
         actionType: action.type,
-        summary: `Drafted design prompt: "${action.prompt.trim()}". Ask the user to confirm before calling render_from_prompt.`,
+        summary: `Drafted ${safeMode} prompt: "${promptText}". Ask the user to confirm before calling render_from_prompt.`,
       };
     }
 
@@ -722,6 +733,8 @@ function triggerVisionGlbMatch(objectId: string, product: ProductRef): void {
       // Fallback to deterministic catalog match
     });
 }
+
+let lastPromptRenderAt = 0;
 
 /**
  * Async wrapper over `executeVoiceAction` that also executes live Shopify
@@ -1192,20 +1205,29 @@ export async function executeVoiceActionAsync(
         ok: false,
         actionType: action.type,
         summary:
-          'No design prompt is drafted yet. Call draft_design_prompt first to write the prompt.',
+          'No design prompt is drafted right now. Wait for a new request before drafting or rendering.',
       };
     }
-    if (store.isRenderingPrompt) {
+    if (store.isRenderingPrompt || Date.now() - lastPromptRenderAt < 3500) {
       return {
         ok: false,
         actionType: action.type,
-        summary: 'Already rendering the drafted prompt — please wait a moment.',
+        summary: 'Render already completed or in progress — skipping duplicate render.',
       };
     }
 
+    // Consume the draft immediately so concurrent/follow-up voice turns can NEVER re-render it
+    store.setDraftedDesignPrompt(null);
     store.setIsRenderingPrompt(true);
+    lastPromptRenderAt = Date.now();
     try {
-      if (draft.mode === 'redesign') {
+      const wantsWholeRoom =
+        draft.mode === 'redesign' &&
+        /\b(whole\s+room|entire\s+room|whole\s+layout|full\s+layout|entire\s+layout|redesign\s+(the\s+|my\s+)?room|restyle\s+(the\s+|my\s+)?room|replace\s+the\s+whole|change\s+the\s+whole|minimalist\s+look|decorative\s+look|start\s+fresh)\b/i.test(
+          `${draft.prompt} ${draft.style ?? ''}`
+        );
+
+      if (wantsWholeRoom) {
         const res = await executeVoiceActionAsync(
           {
             type: 'redesign_room_style',
@@ -1216,14 +1238,14 @@ export async function executeVoiceActionAsync(
           },
           expectedEpoch
         );
-        if (res.ok) {
-          store.setDraftedDesignPrompt(null);
-        }
         return { ...res, actionType: 'render_from_prompt' };
       }
 
+      const effectiveMode: 'add' | 'replace' =
+        draft.mode === 'add' ? 'add' : 'replace';
       const cmd =
-        draft.mode === 'add' && !/^(add|place|put|insert)\b/i.test(draft.prompt)
+        effectiveMode === 'add' &&
+        !/^(add|place|put|insert)\b/i.test(draft.prompt)
           ? `Add ${draft.prompt}`
           : draft.prompt;
 
@@ -1234,7 +1256,7 @@ export async function executeVoiceActionAsync(
           command: cmd,
           scene: store.scene,
           selectedObjectId:
-            draft.mode === 'add'
+            effectiveMode === 'add'
               ? null
               : (draft.targetObjectId ?? store.selectedId ?? null),
         }),
@@ -1242,6 +1264,7 @@ export async function executeVoiceActionAsync(
       const data = (await res.json().catch(() => null)) as {
         scene?: unknown;
         targetObjectId?: string;
+        replacedObject?: SceneObject | null;
         explanation?: string;
         error?: { message?: string };
       } | null;
@@ -1264,34 +1287,69 @@ export async function executeVoiceActionAsync(
         };
       }
 
-      const nextScene = {
-        ...parsed.data,
-        objects: deduplicateSceneObjects(
+      // Surgical update: preserve EVERY other object in the current room verbatim
+      const latestScene = useSceneStore.getState().scene;
+      const targetId = data?.targetObjectId ?? null;
+      const updatedObjFromApi =
+        (targetId
+          ? parsed.data.objects.find((o) => o.id === targetId)
+          : null) ??
+        data?.replacedObject ??
+        null;
+
+      let nextObjects: SceneObject[];
+      if (updatedObjFromApi) {
+        const normalizedSingle: SceneObject = {
+          ...updatedObjFromApi,
+          size: normalizeObjectSizeForRoom(
+            updatedObjFromApi.size,
+            updatedObjFromApi.kind,
+            latestScene.room,
+            updatedObjFromApi.label
+          ),
+        };
+        const existsIdx = latestScene.objects.findIndex(
+          (o) => o.id === normalizedSingle.id
+        );
+        if (existsIdx >= 0) {
+          nextObjects = latestScene.objects.map((o, idx) =>
+            idx === existsIdx ? normalizedSingle : o
+          );
+        } else {
+          nextObjects = deduplicateSceneObjects([
+            ...latestScene.objects,
+            normalizedSingle,
+          ]);
+        }
+      } else {
+        nextObjects = deduplicateSceneObjects(
           parsed.data.objects.map((o) => ({
             ...o,
             size: normalizeObjectSizeForRoom(
               o.size,
               o.kind,
-              parsed.data.room,
+              latestScene.room,
               o.label
             ),
           }))
-        ),
-      };
-
-      store.replaceSceneUndoable(nextScene);
-      if (typeof data?.targetObjectId === 'string') {
-        store.selectObject(data.targetObjectId);
+        );
       }
-      store.setDraftedDesignPrompt(null);
+
+      store.replaceSceneUndoable({
+        ...latestScene,
+        objects: nextObjects,
+      });
+      if (typeof targetId === 'string') {
+        store.selectObject(targetId);
+      }
 
       return {
         ok: true,
         actionType: action.type,
-        objectId: data?.targetObjectId,
+        objectId: targetId ?? undefined,
         summary:
           data?.explanation ||
-          `Rendered "${draft.prompt}" with natural room-proportional dimensions.`,
+          `Updated only that single item without changing the rest of the room.`,
       };
     } catch (err) {
       return {
