@@ -38,6 +38,20 @@ export interface DraftedDesignPrompt {
   createdAt: number;
 }
 
+export interface OrderConfirmation {
+  orderId: string;
+  placedAt: string;
+  items: Array<{
+    title: string;
+    seller: string;
+    priceCents: number;
+    currency: string;
+  }>;
+  totalCents: number;
+  currency: string;
+  checkoutUrl: string | null;
+}
+
 export type CameraMode = 'orbit' | 'walkthrough';
 export type CameraPreset = 'perspective' | 'top' | 'entrance';
 export type RightPanelTab = 'inspect' | 'shop' | 'cart';
@@ -186,6 +200,8 @@ export interface SceneStoreState {
   cartObjectIds: string[];
   /** Direct Shopify products ordered via voice (even if not yet placed in 3D) */
   voiceOrderItems: ProductRef[];
+  /** Latest order confirmation receipt placed by the shopping agent */
+  orderConfirmation: OrderConfirmation | null;
 
   hydrateFromStorage: () => void;
   selectObject: (id: string | null) => void;
@@ -240,6 +256,7 @@ export interface SceneStoreState {
   removeFromCart: (id: string) => void;
   setVoiceOrderItems: (items: ProductRef[]) => void;
   removeVoiceOrderItem: (variantId: string) => void;
+  setOrderConfirmation: (conf: OrderConfirmation | null) => void;
 
   bumpEditEpoch: () => number;
   setVoiceHighlightIds: (ids: string[]) => void;
@@ -308,6 +325,7 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
   isRenderingPrompt: false,
   cartObjectIds: [],
   voiceOrderItems: [],
+  orderConfirmation: null,
 
   hydrateFromStorage: () => {
     if (typeof window === 'undefined') {
@@ -1231,5 +1249,17 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
         ...(next.length === 0 ? { voiceOrderResult: null } : {}),
       };
     });
+  },
+
+  setOrderConfirmation: (conf) => {
+    set((state) => ({
+      orderConfirmation: conf,
+      ...(conf
+        ? {
+            rightPanelTab: 'cart' as RightPanelTab,
+            shopDrawerRequestedEpoch: state.shopDrawerRequestedEpoch + 1,
+          }
+        : {}),
+    }));
   },
 }));

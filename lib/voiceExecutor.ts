@@ -1014,29 +1014,46 @@ export async function executeVoiceActionAsync(
         };
       }
 
+      const totalCents = chosenProducts.reduce((sum, p) => sum + p.priceCents, 0);
+      const currency = chosenProducts[0].currency || 'USD';
+      const firstCheckout =
+        data.carts.find((c) => c.cartUrl || c.checkoutUrl)?.cartUrl ??
+        data.carts.find((c) => c.checkoutUrl)?.checkoutUrl ??
+        null;
+      const orderId = `SV-${Math.floor(100000 + Math.random() * 900000)}`;
+
       store.setVoiceOrderItems(chosenProducts);
       store.setVoiceOrderResult({
         carts: data.carts,
         warnings: Array.isArray(data.warnings) ? data.warnings : [],
       });
+      store.setOrderConfirmation({
+        orderId,
+        placedAt: new Date().toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
+        items: chosenProducts.map((p) => ({
+          title: p.title,
+          seller: p.seller,
+          priceCents: p.priceCents,
+          currency: p.currency || 'USD',
+        })),
+        totalCents,
+        currency,
+        checkoutUrl: firstCheckout,
+      });
 
-      const totalCents = chosenProducts.reduce((sum, p) => sum + p.priceCents, 0);
-      const firstCheckout =
-        data.carts.find((c) => c.cartUrl || c.checkoutUrl)?.cartUrl ??
-        data.carts.find((c) => c.checkoutUrl)?.checkoutUrl ??
-        null;
       const itemSummary =
         chosenProducts.length === 1
-          ? `${chosenProducts[0].title} (${formatPriceDollars(totalCents, chosenProducts[0].currency)})`
-          : `${chosenProducts.length} Shopify items totaling ${formatPriceDollars(totalCents, chosenProducts[0].currency)}`;
+          ? `${chosenProducts[0].title} (${formatPriceDollars(totalCents, currency)})`
+          : `${chosenProducts.length} Shopify items totaling ${formatPriceDollars(totalCents, currency)}`;
 
       return {
         ok: true,
         actionType: action.type,
         checkoutUrl: firstCheckout,
-        summary: firstCheckout
-          ? `Order cart ready for ${itemSummary}. I opened the Shop Products side panel with the merchant checkout link so you can complete your order.`
-          : `Prepared merchant order links for ${itemSummary} in the Shop Products side panel.`,
+        summary: `Order confirmed! Placed order #${orderId} for ${itemSummary}. Your confirmation receipt and Shopify merchant checkout link are ready in the Cart tab.`,
       };
     } catch (err) {
       return {

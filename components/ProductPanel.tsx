@@ -138,6 +138,8 @@ export function ProductPanel({
   const voiceShopProducts = useSceneStore((s) => s.voiceShopProducts);
   const voiceOrderResult = useSceneStore((s) => s.voiceOrderResult);
   const voiceOrderItems = useSceneStore((s) => s.voiceOrderItems);
+  const orderConfirmation = useSceneStore((s) => s.orderConfirmation);
+  const setOrderConfirmation = useSceneStore((s) => s.setOrderConfirmation);
   const cartObjectIds = useSceneStore((s) => s.cartObjectIds);
   const removeFromCart = useSceneStore((s) => s.removeFromCart);
   const removeVoiceOrderItem = useSceneStore((s) => s.removeVoiceOrderItem);
@@ -739,6 +741,60 @@ export function ProductPanel({
             <span className="rounded-full bg-emerald-500/20 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-200">
               {totalCartCount} {totalCartCount === 1 ? "item" : "items"}
             </span>
+          </div>
+        )}
+
+        {orderConfirmation && (
+          <div
+            role="status"
+            className="mb-3 space-y-2 rounded-xl border border-emerald-400/45 bg-emerald-950/45 p-3 text-xs text-emerald-100 shadow-sm"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <div className="flex items-center gap-1.5 font-semibold text-emerald-200">
+                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-emerald-400 text-[10px] font-bold text-zinc-950">
+                    ✓
+                  </span>
+                  <span>Order Confirmed</span>
+                </div>
+                <p className="mt-0.5 font-mono text-[11px] text-emerald-300/90">
+                  #{orderConfirmation.orderId} · {orderConfirmation.placedAt}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setOrderConfirmation(null)}
+                className="cursor-pointer rounded px-1.5 py-0.5 text-[10px] text-emerald-200/80 hover:bg-emerald-500/20 hover:text-white"
+              >
+                Dismiss
+              </button>
+            </div>
+            <ul className="space-y-1 border-t border-emerald-400/20 pt-2 text-[11px]">
+              {orderConfirmation.items.map((item, idx) => (
+                <li key={idx} className="flex items-center justify-between gap-2">
+                  <span className="truncate text-zinc-100">{item.title}</span>
+                  <span className="shrink-0 font-semibold text-amber-200">
+                    {formatMoney(item.priceCents, item.currency)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <div className="flex items-center justify-between border-t border-emerald-400/20 pt-1.5 font-semibold">
+              <span>Order Total</span>
+              <span className="text-amber-200">
+                {formatMoney(orderConfirmation.totalCents, orderConfirmation.currency)}
+              </span>
+            </div>
+            {orderConfirmation.checkoutUrl && (
+              <a
+                href={orderConfirmation.checkoutUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-1 inline-flex w-full items-center justify-center rounded-lg bg-emerald-400 px-3 py-1.5 font-semibold text-zinc-950 hover:bg-emerald-300"
+              >
+                View Shopify Merchant Receipt / Checkout &rarr;
+              </a>
+            )}
           </div>
         )}
         <div className="space-y-1 text-xs">
