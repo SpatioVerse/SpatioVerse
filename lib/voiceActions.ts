@@ -125,8 +125,8 @@ export const VoiceActionSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('browse_shopify_products'),
-    query: z.string().min(1),
-    maxPriceDollars: z.number().positive().optional(),
+    query: z.string().optional().default(''),
+    maxPriceDollars: z.number().nonnegative().optional(),
   }),
   z.object({
     type: z.literal('apply_shopify_product'),

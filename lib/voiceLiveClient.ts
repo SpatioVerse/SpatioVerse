@@ -231,20 +231,19 @@ const LIVE_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: 'browse_shopify_products',
     description:
-      'Search live Shopify products and open the right-hand Shop Products side view showing the suggested products. Returns numbered options (1, 2, 3...) with real titles, sellers, and prices.',
+      'Search live Shopify products and open the right-hand Shop Products side view showing the suggested products. Works with a specific query OR empty/omitted query to show featured Shopify furniture products. Returns numbered options (1, 2, 3...) with real titles, sellers, and prices.',
     parameters: {
       type: Type.OBJECT,
       properties: {
         query: {
           type: Type.STRING,
-          description: 'Furniture or decor search query (e.g. "round walnut table", "cream sofa", "floor lamp").',
+          description: 'Optional furniture or decor search query (e.g. "round walnut table", "cream sofa", "floor lamp"). Omit or leave empty to open the Shop Products panel with featured items.',
         },
         maxPriceDollars: {
           type: Type.NUMBER,
           description: 'Optional maximum price in USD dollars if the user specifies a budget.',
         },
       },
-      required: ['query'],
     },
   },
   {

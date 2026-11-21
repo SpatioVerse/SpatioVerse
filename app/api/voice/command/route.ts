@@ -213,7 +213,7 @@ const RESPONSE_JSON_SCHEMA = {
               query: { type: 'string' },
               maxPriceDollars: { type: 'number' },
             },
-            required: ['type', 'query'],
+            required: ['type'],
           },
           {
             type: 'object',

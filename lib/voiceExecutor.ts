@@ -734,10 +734,19 @@ export async function executeVoiceActionAsync(
   const store = useSceneStore.getState();
 
   if (action.type === 'browse_shopify_products') {
-    store.requestOpenShopDrawer(action.query);
+    const selectedObj = store.selectedId
+      ? store.scene.objects.find((o) => o.id === store.selectedId)
+      : null;
+    const effectiveQuery =
+      (action.query ?? '').trim() ||
+      (selectedObj ? selectedObj.kind : 'furniture');
+
+    store.requestOpenShopDrawer(effectiveQuery);
     try {
       const params = new URLSearchParams();
-      params.set('q', action.query.trim());
+      if (effectiveQuery) {
+        params.set('q', effectiveQuery);
+      }
       if (typeof action.maxPriceDollars === 'number' && action.maxPriceDollars > 0) {
         params.set('maxPrice', String(Math.round(action.maxPriceDollars * 100)));
       } else if (store.scene.budgetCents > 0) {
@@ -771,14 +780,14 @@ export async function executeVoiceActionAsync(
         }
       }
 
-      store.setVoiceShopResults(action.query, deduped);
+      store.setVoiceShopResults(effectiveQuery, deduped);
 
       if (deduped.length === 0) {
         return {
           ok: true,
           actionType: action.type,
           products: [],
-          summary: `Opened Shop Products for "${action.query}", but no live products matched right now.`,
+          summary: `Opened Shop Products for "${effectiveQuery}", but no live products matched right now.`,
         };
       }
 
@@ -798,7 +807,7 @@ export async function executeVoiceActionAsync(
         ok: true,
         actionType: action.type,
         products: topList,
-        summary: `Opened Shop Products side view with ${deduped.length} live Shopify results for "${action.query}". Top options: ${spokenPreview}.`,
+        summary: `Opened Shop Products side view with ${deduped.length} live Shopify results for "${effectiveQuery}". Top options: ${spokenPreview}.`,
       };
     } catch (err) {
       return {
