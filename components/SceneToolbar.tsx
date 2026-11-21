@@ -69,8 +69,12 @@ export function SceneToolbar({
   const warningCount = issues.filter(
     (issue) => issue.severity === 'warning'
   ).length;
+  const cartObjectIds = useSceneStore((state) => state.cartObjectIds);
   const shopifyCount = scene.objects.filter(
-    (obj) => obj.source === 'shopify' && Boolean(obj.product)
+    (obj) =>
+      obj.source === 'shopify' &&
+      Boolean(obj.product) &&
+      cartObjectIds.includes(obj.id)
   ).length;
   const isWalkthrough = cameraMode === 'walkthrough';
   const shopActive = inspectorOpen && rightPanelTab === 'shop';

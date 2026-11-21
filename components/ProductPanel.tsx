@@ -134,8 +134,8 @@ export function ProductPanel({
   const voiceShopQuery = useSceneStore((s) => s.voiceShopQuery);
   const voiceShopProducts = useSceneStore((s) => s.voiceShopProducts);
   const voiceOrderResult = useSceneStore((s) => s.voiceOrderResult);
-  const clearObjectProduct = useSceneStore((s) => s.clearObjectProduct);
-  const toggleLock = useSceneStore((s) => s.toggleLock);
+  const cartObjectIds = useSceneStore((s) => s.cartObjectIds);
+  const removeFromCart = useSceneStore((s) => s.removeFromCart);
   const setVoiceOrderResult = useSceneStore((s) => s.setVoiceOrderResult);
 
   const [customQuery, setCustomQuery] = useState<string | null>(null);
@@ -287,11 +287,12 @@ export function ProductPanel({
     });
   }, [activeProducts, loadedVariantsByProduct]);
 
-  // Separate owned fixtures ($0) from new Shopify purchases.
-  // If any Shopify item(s) are locked, ONLY those locked item(s) go into the cart.
-  const { ownedCount, shopifyObjects, hasLockedCartSelection, newPurchaseTotalCents, totalCurrency } = useMemo(() => {
+  // Separate owned fixtures ($0) from explicitly carted (locked) Shopify purchases.
+  const { ownedCount, shopifyObjects, newPurchaseTotalCents, totalCurrency } = useMemo(() => {
     let owned = 0;
-    const allShopify: SceneObject[] = [];
+    const cartItems: SceneObject[] = [];
+    const cartIdSet = new Set(cartObjectIds);
+    let totalCents = 0;
     let currency = "USD";
 
     for (const obj of scene.objects) {
@@ -299,33 +300,23 @@ export function ProductPanel({
         owned += 1;
         continue;
       }
-      if (obj.source === "shopify" && obj.product) {
-        allShopify.push(obj);
+      if (obj.source === "shopify" && obj.product && cartIdSet.has(obj.id)) {
+        cartItems.push(obj);
+        totalCents += obj.product.priceCents;
         if (obj.product.currency) currency = obj.product.currency;
       }
     }
 
-    const lockedShopify = allShopify.filter((o) => Boolean(o.locked));
-    const cartItems = lockedShopify.length > 0 ? lockedShopify : allShopify;
-    const totalCents = cartItems.reduce(
-      (sum, o) => sum + (o.product?.priceCents ?? 0),
-      0
-    );
-
     return {
       ownedCount: owned,
       shopifyObjects: cartItems,
-      hasLockedCartSelection: lockedShopify.length > 0,
       newPurchaseTotalCents: totalCents,
       totalCurrency: currency,
     };
-  }, [scene.objects]);
+  }, [scene.objects, cartObjectIds]);
 
   const handleRemoveFromCart = (obj: SceneObject) => {
-    if (obj.locked) {
-      toggleLock(obj.id);
-    }
-    clearObjectProduct(obj.id);
+    removeFromCart(obj.id);
     setInternalCartResult(null);
     if (voiceOrderResult) {
       setVoiceOrderResult(null);
@@ -700,9 +691,7 @@ export function ProductPanel({
             <span className="font-medium text-zinc-300">{formatMoney(0, totalCurrency)}</span>
           </div>
           <div className="flex items-center justify-between text-sm font-semibold text-zinc-100">
-            <span>
-              {hasLockedCartSelection ? "Locked cart items" : "New purchases total"} ({shopifyObjects.length})
-            </span>
+            <span>Cart items ({shopifyObjects.length})</span>
             <span className="text-amber-200">
               {formatMoney(newPurchaseTotalCents, totalCurrency)}
             </span>
@@ -727,11 +716,11 @@ export function ProductPanel({
                 <button
                   type="button"
                   onClick={() => handleRemoveFromCart(obj)}
-                  title="Remove item from cart"
-                  aria-label={`Remove ${obj.product?.title ?? obj.label} from cart`}
-                  className="shrink-0 cursor-pointer rounded px-1.5 py-0.5 text-[10px] font-semibold text-red-300 transition hover:bg-red-500/20 hover:text-red-200"
+                  title="Delete item from cart"
+                  aria-label={`Delete ${obj.product?.title ?? obj.label} from cart`}
+                  className="shrink-0 cursor-pointer rounded bg-red-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-red-300 transition hover:bg-red-500/30 hover:text-red-100"
                 >
-                  ✕
+                  Delete
                 </button>
               </li>
             ))}
@@ -740,9 +729,7 @@ export function ProductPanel({
 
         {shopifyObjects.length === 0 && (
           <p className="mt-2 text-[11px] text-zinc-400">
-            {ownedCount > 0
-              ? `All staged items are owned (${formatMoney(0, totalCurrency)}) — replace an item with a Shopify product to build a cart.`
-              : "Replace a scene fixture with a Shopify product to review merchant carts."}
+            Cart is empty. Lock a Shopify fixture in the 3D scene to add only that item to your cart.
           </p>
         )}
 

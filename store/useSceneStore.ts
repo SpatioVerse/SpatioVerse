@@ -182,6 +182,8 @@ export interface SceneStoreState {
   draftedDesignPrompt: DraftedDesignPrompt | null;
   /** Lock flag preventing concurrent/duplicate prompt renders while speaking */
   isRenderingPrompt: boolean;
+  /** Explicit object IDs currently in the user's shopping cart (added via Lock, removed via Delete) */
+  cartObjectIds: string[];
 
   hydrateFromStorage: () => void;
   selectObject: (id: string | null) => void;
@@ -232,6 +234,8 @@ export interface SceneStoreState {
   ) => void;
   setDraftedDesignPrompt: (draft: DraftedDesignPrompt | null) => void;
   setIsRenderingPrompt: (rendering: boolean) => void;
+  addToCart: (id: string) => void;
+  removeFromCart: (id: string) => void;
 
   bumpEditEpoch: () => number;
   setVoiceHighlightIds: (ids: string[]) => void;
@@ -298,6 +302,7 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
   voiceOrderResult: null,
   draftedDesignPrompt: null,
   isRenderingPrompt: false,
+  cartObjectIds: [],
 
   hydrateFromStorage: () => {
     if (typeof window === 'undefined') {
@@ -562,15 +567,28 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
 
   toggleLock: (id) => {
     set((state) => {
+      const target = state.scene.objects.find((obj) => obj.id === id);
+      const nextLocked = target ? !target.locked : false;
       const nextScene: ShopScene = {
         ...state.scene,
         objects: state.scene.objects.map((obj) =>
-          obj.id === id ? { ...obj, locked: !obj.locked } : obj
+          obj.id === id ? { ...obj, locked: nextLocked } : obj
         ),
       };
+      let nextCartIds = state.cartObjectIds;
+      if (target && target.source === 'shopify' && target.product) {
+        if (nextLocked) {
+          if (!nextCartIds.includes(id)) {
+            nextCartIds = [...nextCartIds, id];
+          }
+        } else {
+          nextCartIds = nextCartIds.filter((cid) => cid !== id);
+        }
+      }
       persistSceneState(state.activePreset, nextScene);
       return {
         scene: nextScene,
+        cartObjectIds: nextCartIds,
         isDragging: state.selectedId === id ? false : state.isDragging,
       };
     });
@@ -1162,5 +1180,29 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
 
   setIsRenderingPrompt: (rendering) => {
     set({ isRenderingPrompt: rendering });
+  },
+
+  addToCart: (id) => {
+    set((state) => ({
+      cartObjectIds: state.cartObjectIds.includes(id)
+        ? state.cartObjectIds
+        : [...state.cartObjectIds, id],
+    }));
+  },
+
+  removeFromCart: (id) => {
+    set((state) => {
+      const nextScene: ShopScene = {
+        ...state.scene,
+        objects: state.scene.objects.map((obj) =>
+          obj.id === id ? { ...obj, locked: false } : obj
+        ),
+      };
+      persistSceneState(state.activePreset, nextScene);
+      return {
+        scene: nextScene,
+        cartObjectIds: state.cartObjectIds.filter((cid) => cid !== id),
+      };
+    });
   },
 }));

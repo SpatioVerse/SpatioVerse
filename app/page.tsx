@@ -324,6 +324,7 @@ export default function HomePage() {
   const intakeOpen = useSceneStore((state) => state.intakeOpen);
   const wizardOpen = useSceneStore((state) => state.wizardOpen);
   const rightPanelTab = useSceneStore((state) => state.rightPanelTab);
+  const cartObjectIds = useSceneStore((state) => state.cartObjectIds);
   const shopDrawerRequestedEpoch = useSceneStore(
     (state) => state.shopDrawerRequestedEpoch
   );
@@ -777,7 +778,7 @@ export default function HomePage() {
         proposed.push(obj);
         if (obj.product) {
           spent += Math.round(obj.product.priceCents);
-          if (obj.source === 'shopify') {
+          if (obj.source === 'shopify' && cartObjectIds.includes(obj.id)) {
             shopify.push(obj);
           }
         }
@@ -806,7 +807,7 @@ export default function HomePage() {
       warningIds: warnSet,
       spentCents: spent,
     };
-  }, [scene.objects, issues]);
+  }, [scene.objects, issues, cartObjectIds]);
 
   const selectedIssues = useMemo(() => {
     if (!selectedObject) return [];
