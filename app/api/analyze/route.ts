@@ -1,11 +1,13 @@
 import crypto from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
+import { FT_TO_METERS } from '@/lib/schema';
 import {
   ANALYZE_MODEL_ID,
   analyzeSpaceMedia,
   analyzeSpaceUrl,
   GeminiServiceError,
+  type AnalyzeRoomHint,
 } from '@/lib/gemini';
 
 export const maxDuration = 60;
@@ -17,8 +19,47 @@ const JsonAnalyzeRequestSchema = z
     sourceType: z.string().optional(),
     style: z.string().optional(),
     notes: z.string().optional(),
+    room: z
+      .object({
+        width: z.number().positive(),
+        depth: z.number().positive(),
+        height: z.number().positive(),
+        entranceWall: z.enum(['north', 'south', 'east', 'west']).optional(),
+      })
+      .optional(),
   })
   .passthrough();
+
+function parseMultipartRoomHint(formData: FormData): AnalyzeRoomHint | undefined {
+  const widthFt = Number(formData.get('widthFt'));
+  const depthFt = Number(formData.get('depthFt'));
+  const heightFt = Number(formData.get('heightFt'));
+  if (
+    !Number.isFinite(widthFt) ||
+    widthFt <= 0 ||
+    !Number.isFinite(depthFt) ||
+    depthFt <= 0
+  ) {
+    return undefined;
+  }
+  const safeHeightFt =
+    Number.isFinite(heightFt) && heightFt > 0 ? heightFt : 9;
+  const rawWall = String(formData.get('entranceWall') ?? '').toLowerCase();
+  const entranceWall =
+    rawWall === 'north' ||
+    rawWall === 'south' ||
+    rawWall === 'east' ||
+    rawWall === 'west'
+      ? rawWall
+      : 'south';
+
+  return {
+    width: Number((widthFt * FT_TO_METERS).toFixed(4)),
+    depth: Number((depthFt * FT_TO_METERS).toFixed(4)),
+    height: Number((safeHeightFt * FT_TO_METERS).toFixed(4)),
+    entranceWall,
+  };
+}
 
 function extractUploadedFile(formData: FormData): File | null {
   const preferredKeys = ['file', 'media', 'video', 'image'];
@@ -106,6 +147,7 @@ export async function POST(request: Request): Promise<NextResponse> {
         mediaUrl: parsed.data.mediaUrl,
         youtubeId: parsed.data.youtubeId,
         notes: combinedNotes || undefined,
+        roomHint: parsed.data.room,
         requestId,
       });
 
@@ -172,6 +214,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     }
 
     const notes = buildMultipartNotes(formData);
+    const roomHint = parseMultipartRoomHint(formData);
     const arrayBuffer = await uploadedFile.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
@@ -180,6 +223,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       mimeType: uploadedFile.type,
       fileName: uploadedFile.name,
       notes,
+      roomHint,
       requestId,
     });
 

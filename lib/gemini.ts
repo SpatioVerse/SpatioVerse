@@ -87,7 +87,7 @@ export class GeminiServiceError extends Error {
  */
 export function logGeminiEvent(event: {
   requestId: string;
-  route: '/api/analyze' | '/api/plan';
+  route: '/api/analyze' | '/api/plan' | '/api/replace';
   modelId: string;
   stage: string;
   durationMs?: number;
@@ -196,6 +196,18 @@ export const FixtureObservationSchema = z.object({
   label: z.string().min(1),
   visualCues: z.array(z.string()),
   possibleLocation: z.string(),
+  wallAlignment: z.enum(['north', 'south', 'east', 'west', 'center']).optional(),
+  position: z.tuple([z.number(), z.number(), z.number()]).optional(),
+  rotationY: z.number().optional(),
+  relativePosition: z
+    .object({
+      xNorm: z.number().min(-1).max(1),
+      zNorm: z.number().min(-1).max(1),
+    })
+    .optional(),
+  approxSizeMeters: z
+    .tuple([z.number().positive(), z.number().positive(), z.number().positive()])
+    .optional(),
   evidence: z.string(),
   confidence: z.enum(['high', 'medium', 'low']),
   uncertainty: z.string(),
@@ -210,11 +222,19 @@ const RawAnalyzeResponseSchema = z.object({
   warnings: z.array(z.string()),
 });
 
+export interface AnalyzeRoomHint {
+  width: number;
+  depth: number;
+  height: number;
+  entranceWall?: 'north' | 'south' | 'east' | 'west';
+}
+
 export interface AnalyzeMediaInput {
   buffer: Buffer;
   mimeType: string;
   fileName?: string;
   notes?: string;
+  roomHint?: AnalyzeRoomHint;
   requestId: string;
   timeoutMs?: number;
   forceFilesApi?: boolean;
@@ -225,6 +245,7 @@ export interface AnalyzeUrlInput {
   mediaUrl: string;
   youtubeId?: string | null;
   notes?: string;
+  roomHint?: AnalyzeRoomHint;
   requestId: string;
   timeoutMs?: number;
   clientOverride?: Pick<GoogleGenAI, 'models' | 'files'>;
@@ -272,7 +293,44 @@ const OBSERVATION_RESPONSE_SCHEMA = {
           possibleLocation: {
             type: 'string',
             description:
-              'Relative placement visible in frame (e.g., "left wall near rear corner").',
+              'Relative placement visible in frame (e.g., "against west wall near rear corner").',
+          },
+          wallAlignment: {
+            type: 'string',
+            enum: ['north', 'south', 'east', 'west', 'center'],
+            description:
+              'Which wall the fixture sits against (north=back wall opposite camera/entry, south=entry wall, west=left wall, east=right wall, center=freestanding interior).',
+          },
+          position: {
+            type: 'array',
+            items: { type: 'number' },
+            minItems: 3,
+            maxItems: 3,
+            description:
+              'Direct vision-estimated 3D floor coordinates [x, 0, z] in meters inside the provided room bounds (X in [-width/2, +width/2], Z in [-depth/2, +depth/2], Y=0 on floor) matching where the object sits in the video.',
+          },
+          rotationY: {
+            type: 'number',
+            description:
+              'Counter-clockwise orientation around +Y in radians (0 facing south, 1.5708 facing east from west wall, -1.5708 facing west from east wall, 3.1416 facing north).',
+          },
+          relativePosition: {
+            type: 'object',
+            description:
+              'Approximate normalized floor coordinates in [-1, 1] for faithful layout reconstruction (xNorm: -1 west to +1 east; zNorm: -1 north/back to +1 south/front). Explicitly uncalibrated.',
+            properties: {
+              xNorm: { type: 'number' },
+              zNorm: { type: 'number' },
+            },
+            required: ['xNorm', 'zNorm'],
+          },
+          approxSizeMeters: {
+            type: 'array',
+            items: { type: 'number' },
+            minItems: 3,
+            maxItems: 3,
+            description:
+              'Rough uncalibrated visual proportion estimate [width, height, depth] in meters for 3D staging (never treated as verified).',
           },
           evidence: {
             type: 'string',
@@ -325,23 +383,39 @@ const OBSERVATION_RESPONSE_SCHEMA = {
 const UNCALIBRATED_WARNING =
   'Exact room and fixture measurements cannot be determined from uncalibrated camera media; user confirmation of physical dimensions is required.';
 
-function buildObservationPrompts(isVideo: boolean, notes?: string) {
+function buildObservationPrompts(
+  isVideo: boolean,
+  notes?: string,
+  roomHint?: AnalyzeRoomHint
+) {
+  const halfW = roomHint ? (roomHint.width / 2).toFixed(3) : '2.400';
+  const halfD = roomHint ? (roomHint.depth / 2).toFixed(3) : '2.100';
+  const roomLine = roomHint
+    ? `User-confirmed room envelope in METERS: width(X)=${roomHint.width.toFixed(3)}m ([-${halfW}, +${halfW}]), depth(Z)=${roomHint.depth.toFixed(3)}m ([-${halfD}, +${halfD}]), height(Y)=${roomHint.height.toFixed(3)}m, entrance wall=${(roomHint.entranceWall ?? 'south').toUpperCase()}.`
+    : 'Room floor is centered at [0, 0] in meters (use approximate centered coordinates X in [-2.4, +2.4], Z in [-2.1, +2.1]).';
+
   const systemPrompt = [
-    `You are SpaceStage Scene Observer powered by ${ANALYZE_MODEL_ID}.`,
-    'Inspect the merchant-provided retail space media and identify ONLY visibly grounded furniture/fixtures.',
+    `You are SpaceStage Vision-to-3D Scene Observer powered by ${ANALYZE_MODEL_ID}.`,
+    'Watch the entire space video/photo and DIRECTLY reconstruct the 3D floorplan coordinates (`position`, `rotationY`, `approxSizeMeters`) of every visible floor-standing furniture/fixture item so the 3D scene mirrors the exact layout seen in the media.',
+    roomLine,
     'STRICT RULES:',
-    '1. DO NOT invent or assert exact room or furniture measurements (no uncalibrated feet/meters/cm claims).',
-    '2. Map each visible fixture to one of: shelf, counter, table, rack, lamp, plant, art.',
+    '1. Track camera pan/rotation across the clip to build ONE coherent top-down 3D floorplan: north = back wall (-Z), south = entrance/front wall (+Z), west = left wall (-X), east = right wall (+X), Y = 0 on floor.',
+    '2. Output exact non-overlapping `[x, 0, z]` `position` and `rotationY` (radians: 0 along north wall, 1.5708 along west wall, -1.5708 along east wall, 3.1416 along south wall) directly from what you SEE — keep every item inside the room walls and leave the entrance doorway clear.',
+    '3. Skip ceiling-mounted pendant lights, chandeliers, and small wall sconces; focus on floor-standing furniture, counters, shelves, sofas, chairs, tables, racks, plants, floor lamps, mirrors, and major wall art.',
+    '4. Map `kind` to one of: shelf, counter, table, rack, lamp, plant, art. Use clear descriptive labels matching the real object (e.g., "Lounge Sofa", "Accent Chair", "Wooden Display Shelf", "Modern Wooden Cabinet", "Coffee Table", "Round Side Table", "Bar Stool", "Wall Mirror", "Steel Frame Rack", "Floor Lamp", "Potted Plant", "Checkout Counter").',
+    '5. NEVER claim exact calibrated measurements — mark scale uncertainty honestly in `uncertainty` and `warnings`.',
     isVideo
-      ? '3. Cite concrete video timestamp ranges (e.g. "00:02-00:06") in `evidence`.'
-      : '3. Cite concrete image regions (e.g. "back-left corner", "center foreground") in `evidence`.',
-    '4. Explicitly describe scale/occlusion/mounting ambiguities in `uncertainty` and `warnings`.',
-    '5. Never hallucinate hidden objects outside the frame.',
+      ? '6. Cite concrete video timestamp ranges (e.g. "00:01-00:05") in `evidence`.'
+      : '6. Cite concrete image regions (e.g. "back-left corner", "center foreground") in `evidence`.',
   ].join('\n');
 
   const userPrompt = notes?.trim()
-    ? `Analyze this retail space ${isVideo ? 'video' : 'photo'} and extract visible owned fixtures. Merchant context (unverified): ${notes.trim()}`
-    : `Analyze this retail space ${isVideo ? 'video' : 'photo'} and extract visible owned fixtures, room cues, and uncertainty warnings.`;
+    ? `Directly reconstruct the 3D floorplan layout (` +
+      '`position`, `rotationY`, `approxSizeMeters`, `observations`' +
+      `) from this ${isVideo ? 'video' : 'photo'}. Merchant context: ${notes.trim()}`
+    : `Directly reconstruct the 3D floorplan layout (` +
+      '`position`, `rotationY`, `approxSizeMeters`, `observations`' +
+      `) from this ${isVideo ? 'video' : 'photo'}, matching the exact visible arrangement.`;
 
   return { systemPrompt, userPrompt };
 }
@@ -559,7 +633,11 @@ export async function analyzeSpaceMedia(
     }
 
     const isVideo = mimeType.startsWith('video/');
-    const { systemPrompt, userPrompt } = buildObservationPrompts(isVideo, notes);
+    const { systemPrompt, userPrompt } = buildObservationPrompts(
+      isVideo,
+      notes,
+      input.roomHint
+    );
 
     const response = await withTimeout(
       ai.models.generateContent({
@@ -734,7 +812,11 @@ export async function analyzeSpaceUrl(
     });
 
     try {
-      const { systemPrompt, userPrompt } = buildObservationPrompts(true, notes);
+      const { systemPrompt, userPrompt } = buildObservationPrompts(
+        true,
+        notes,
+        input.roomHint
+      );
       const response = await withTimeout(
         ai.models.generateContent({
           model: ANALYZE_MODEL_ID,
@@ -1238,7 +1320,7 @@ function buildPlannerSystemInstruction(params: {
     `- Floor is centered at [0, 0]: X spans [-${halfW}, +${halfW}] (west = -${halfW}, east = +${halfW}); Z spans [-${halfD}, +${halfD}] (north = -${halfD}, south = +${halfD}).`,
     '- Place floor-standing fixtures with `position[1] = 0` (bottom resting on the floor).',
     '- Every rotated object footprint (`position` +/- rotated `size[0]/2`, `size[2]/2`) MUST stay strictly inside the room walls (`[-width/2, +width/2]` and `[-depth/2, +depth/2]`) with zero overlap between fixtures.',
-    `- Entrance is on the ${room.entrance.wall.toUpperCase()} wall (offset ${room.entrance.offset.toFixed(3)}m from wall center, doorway width ${room.entrance.width.toFixed(3)}m).`,
+    `- Entrance is on the ${room.entrance.wall.toUpperCase()} wall (offset ${room.entrance.offset.toFixed(3)}m from wall center, doorway width ${room.entrance.width.toFixed(3)}m). NEVER place wall art, mirrors, counters, or tall shelves flush against the glass ${room.entrance.wall.toUpperCase()} entrance wall.`,
     `- Keep at least ${minWalkwayWidth.toFixed(4)}m (3 ft) unobstructed vestibule inside the entrance AND maintain a continuous ${minWalkwayWidth.toFixed(4)}m wide walkway from the entrance reaching every counter, shelf, table, and rack.`,
     noDrilling
       ? '- `noDrilling` is TRUE: ONLY place freestanding floor fixtures (`position[1] = 0`, floor-leaning if art). DO NOT use wall-mounted shelves, hanging racks, ceiling pendants, sconces, or elevated wall art.'
@@ -1356,11 +1438,15 @@ function normalizeOwnedItemSize(item: OwnedFixtureInput): Vec3 | undefined {
 function resolveOwnedAndCandidates(rawInput: PlanRequestInput): {
   ownedFixtures: OwnedFixtureInput[];
   productCandidates: ProductCandidateInput[];
+  recreatingFromMedia: boolean;
 } {
   const explicitOwned =
     rawInput.existingObjects ?? rawInput.ownedObjects ?? rawInput.items;
+  const mediaObservations = rawInput.analysis?.observations ?? [];
 
   let ownedFixtures: OwnedFixtureInput[] = [];
+  let recreatingFromMedia = false;
+
   if (explicitOwned) {
     ownedFixtures = explicitOwned
       .filter(
@@ -1372,6 +1458,62 @@ function resolveOwnedAndCandidates(rawInput: PlanRequestInput): {
       .map((item) => {
         const resolvedSize = normalizeOwnedItemSize(item);
         return resolvedSize ? { ...item, size: resolvedSize } : item;
+      });
+  } else if (mediaObservations.length > 0) {
+    // Faithfully recreate the room observed in the uploaded video/photo
+    // instead of keeping unrelated demo-preset furniture from currentScene.
+    recreatingFromMedia = true;
+    const halfW = rawInput.room.width / 2;
+    const halfD = rawInput.room.depth / 2;
+
+    ownedFixtures = mediaObservations
+      .filter((obs) => {
+        // Exclude overhead ceiling pendants / wall sconces from floor-standing furniture footprint
+        if (obs.kind === 'lamp' && obs.likelyWallMounted) return false;
+        if (/pendant|chandelier|sconce|ceiling/i.test(obs.label)) return false;
+        // When noDrilling is true, exclude wall-mounted art/mirrors that hang above counters/sofas
+        // so the planner doesn't shove them onto the front glass entrance wall
+        if (rawInput.noDrilling && obs.kind === 'art' && obs.likelyWallMounted) {
+          return false;
+        }
+        return true;
+      })
+      .map((obs) => {
+        const approxSize = obs.approxSizeMeters ?? DEFAULT_APPROX_SIZES[obs.kind];
+        let suggestedPos: Vec3 | undefined = obs.position
+          ? [
+              Number(obs.position[0].toFixed(3)),
+              0,
+              Number(obs.position[2].toFixed(3)),
+            ]
+          : undefined;
+
+        if (!suggestedPos && obs.relativePosition) {
+          const clampedX = Math.max(-0.92, Math.min(0.92, obs.relativePosition.xNorm));
+          const clampedZ = Math.max(-0.92, Math.min(0.92, obs.relativePosition.zNorm));
+          suggestedPos = [
+            Number((clampedX * halfW).toFixed(3)),
+            0,
+            Number((clampedZ * halfD).toFixed(3)),
+          ];
+        }
+
+        let suggestedRot = typeof obs.rotationY === 'number' ? obs.rotationY : 0;
+        if (typeof obs.rotationY !== 'number') {
+          if (obs.wallAlignment === 'west') suggestedRot = Math.PI / 2;
+          else if (obs.wallAlignment === 'east') suggestedRot = -Math.PI / 2;
+          else if (obs.wallAlignment === 'south') suggestedRot = Math.PI;
+        }
+
+        return {
+          id: obs.id,
+          kind: obs.kind,
+          label: obs.label,
+          size: approxSize,
+          position: suggestedPos,
+          rotationY: suggestedRot,
+          dimensionsVerified: false,
+        };
       });
   } else if (rawInput.currentScene) {
     ownedFixtures = rawInput.currentScene.objects
@@ -1394,7 +1536,7 @@ function resolveOwnedAndCandidates(rawInput: PlanRequestInput): {
       candidateMap.set(p.variantId, p);
     }
   }
-  if (rawInput.currentScene) {
+  if (rawInput.currentScene && !recreatingFromMedia) {
     for (const obj of rawInput.currentScene.objects) {
       if (
         obj.source === 'shopify' &&
@@ -1415,6 +1557,7 @@ function resolveOwnedAndCandidates(rawInput: PlanRequestInput): {
   return {
     ownedFixtures,
     productCandidates: Array.from(candidateMap.values()),
+    recreatingFromMedia,
   };
 }
 
@@ -1437,7 +1580,7 @@ export async function generateShopPlan(
     rawInput.currentScene?.style?.trim() ||
     'Modern, minimal, warm retail aesthetic';
 
-  const { ownedFixtures, productCandidates } =
+  const { ownedFixtures, productCandidates, recreatingFromMedia } =
     resolveOwnedAndCandidates(rawInput);
 
   const systemInstruction = buildPlannerSystemInstruction({
@@ -1449,7 +1592,9 @@ export async function generateShopPlan(
 
   const initialPrompt = JSON.stringify(
     {
-      task: 'Design an optimal, constraint-valid 3D retail store layout.',
+      task: recreatingFromMedia
+        ? 'FAITHFUL_VISION_RECREATION: The vision model ALREADY reconstructed direct 3D coordinates (`currentPosition`, `currentRotationY`, `size`) for each observed fixture in `confirmedOwnedFixtures` while watching the video. PRESERVE those exact positions and orientations as closely as possible — ONLY apply minimal nudges if needed to stay inside room walls, resolve overlaps, or keep the 3ft entrance clear. Do NOT discard or rearrange the room.'
+        : 'Design an optimal, constraint-valid 3D retail store layout.',
       room: rawInput.room,
       purpose,
       style,
@@ -1655,3 +1800,406 @@ export async function generateShopPlan(
 }
 
 export const generateShopPlanWithNeon = generateShopPlan;
+
+// ============================================================================
+// 3. VOICE / TEXT OBJECT REPLACEMENT & 3D MOCKUP GENERATOR (/api/replace)
+// ============================================================================
+
+export const ReplaceRequestSchema = z.object({
+  command: z.string().min(1),
+  scene: ShopSceneSchema,
+  selectedObjectId: z.string().nullable().optional(),
+  replacementProduct: z
+    .object({
+      title: z.string().min(1),
+      description: z.string().optional(),
+      product: ProductRefSchema.optional(),
+    })
+    .optional(),
+});
+
+export type ReplaceRequestInput = z.infer<typeof ReplaceRequestSchema>;
+
+const RawReplaceOutputSchema = z.object({
+  action: z.enum(['replace', 'add', 'remove']),
+  targetObjectId: z.string().nullable().optional(),
+  replacement: z
+    .object({
+      kind: SceneKindSchema,
+      label: z.string().min(1),
+      size: z.tuple([
+        z.number().positive(),
+        z.number().positive(),
+        z.number().positive(),
+      ]),
+      position: z.tuple([z.number(), z.number(), z.number()]).optional(),
+      rotationY: z.number().optional(),
+    })
+    .nullable()
+    .optional(),
+  explanation: z.string().min(1),
+});
+
+const REPLACE_RESPONSE_SCHEMA = {
+  type: 'object',
+  properties: {
+    action: {
+      type: 'string',
+      enum: ['replace', 'add', 'remove'],
+    },
+    targetObjectId: {
+      type: 'string',
+      nullable: true,
+      description:
+        'Exact `id` from `scene.objects` to replace or remove. Null when adding a new item.',
+    },
+    replacement: {
+      type: 'object',
+      nullable: true,
+      description:
+        '3D mockup specification for the replacement or newly added object.',
+      properties: {
+        kind: {
+          type: 'string',
+          enum: ['shelf', 'counter', 'table', 'rack', 'lamp', 'plant', 'art'],
+        },
+        label: {
+          type: 'string',
+          description:
+            'Descriptive mockup label including color & furniture type so our 3D GLB catalog renders the matching asset and finish (e.g., "Cream Linen Lounge Sofa", "Walnut Wooden Cabinet Wardrobe", "Round Marble Coffee Table", "Olive Velvet Accent Chair", "Brass Floor Lamp", "Wooden Display Shelf", "Wall Mirror", "Wooden Bar Stool").',
+        },
+        size: {
+          type: 'array',
+          items: { type: 'number' },
+          minItems: 3,
+          maxItems: 3,
+          description: '[widthX, heightY, depthZ] in meters.',
+        },
+        position: {
+          type: 'array',
+          items: { type: 'number' },
+          minItems: 3,
+          maxItems: 3,
+          description:
+            'Optional [x, 0, z] in meters. For replacements, keep the target object position unless nudging slightly to stay inside room bounds.',
+        },
+        rotationY: {
+          type: 'number',
+          description:
+            'Optional rotation around +Y in radians; defaults to target object rotationY.',
+        },
+      },
+      required: ['kind', 'label', 'size'],
+    },
+    explanation: {
+      type: 'string',
+      description: 'Short 1-sentence confirmation of the replacement performed.',
+    },
+  },
+  required: ['action', 'explanation'],
+};
+
+export interface ReplaceObjectResult {
+  scene: ShopScene;
+  action: 'replace' | 'add' | 'remove';
+  targetObjectId: string | null;
+  replacedObject: SceneObject | null;
+  issues: ConstraintIssue[];
+  valid: boolean;
+  explanation: string;
+  modelUsed: string;
+  requestId: string;
+}
+
+function clampObjectInsideRoom(
+  obj: SceneObject,
+  room: ShopScene['room']
+): SceneObject {
+  const halfW = room.width / 2;
+  const halfD = room.depth / 2;
+  const cos = Math.abs(Math.cos(obj.rotationY));
+  const sin = Math.abs(Math.sin(obj.rotationY));
+  const extX = (obj.size[0] / 2) * cos + (obj.size[2] / 2) * sin;
+  const extZ = (obj.size[0] / 2) * sin + (obj.size[2] / 2) * cos;
+  const pad = 0.03;
+
+  const minX = -halfW + extX + pad;
+  const maxX = halfW - extX - pad;
+  const minZ = -halfD + extZ + pad;
+  const maxZ = halfD - extZ - pad;
+
+  const clampedX =
+    minX <= maxX ? Math.max(minX, Math.min(maxX, obj.position[0])) : 0;
+  const clampedZ =
+    minZ <= maxZ ? Math.max(minZ, Math.min(maxZ, obj.position[2])) : 0;
+  const clampedY = Math.max(
+    0,
+    Math.min(Math.max(0, room.height - obj.size[1]), obj.position[1])
+  );
+
+  return {
+    ...obj,
+    position: [
+      Number(clampedX.toFixed(3)),
+      Number(clampedY.toFixed(3)),
+      Number(clampedZ.toFixed(3)),
+    ],
+  };
+}
+
+/**
+ * Replaces, adds, or removes a 3D fixture in `ShopScene` from a typed/spoken
+ * natural-language command or a clicked product card, generating a matching
+ * 3D PBR GLB mockup specification and validating spatial constraints.
+ */
+export async function replaceObjectInScene(
+  input: ReplaceRequestInput,
+  options: PlanGenerationOptions
+): Promise<ReplaceObjectResult> {
+  const { requestId, timeoutMs = 45_000 } = options;
+  const ai =
+    options.clientOverride ?? getGeminiClient(requestId, PLAN_MODEL_ID);
+
+  const { command, scene, selectedObjectId, replacementProduct } = input;
+  const startMs = Date.now();
+
+  logGeminiEvent({
+    requestId,
+    route: '/api/replace',
+    modelId: PLAN_MODEL_ID,
+    stage: 'start',
+    meta: {
+      objectCount: scene.objects.length,
+      hasSelection: Boolean(selectedObjectId),
+      hasProductCard: Boolean(replacementProduct),
+    },
+  });
+
+  const systemInstruction = [
+    `You are SpaceStage 3D Mockup Replacement Engine powered by ${PLAN_MODEL_ID}.`,
+    'Interpret the user’s typed or spoken command (or clicked product specification) and return the exact replacement 3D mockup.',
+    'RULES:',
+    '1. If `selectedObjectId` is set and the command refers to "this", "it", or matches the selected object type, set `targetObjectId` to `selectedObjectId`.',
+    '2. If the user names a specific item in the room (e.g., "replace the wardrobe", "swap the sofa", "change the coffee table"), match the best existing `id` from `sceneObjects`.',
+    '3. For `replacement.label`, ALWAYS include the requested color/material AND a specific style+furniture noun from our 28-model GLB catalog: Modern Sofa, Minimalist Boucle Sofa, Tufted Classic Sofa, Daybed, Modern Armchair, Mid-Century Lounge Chair, Classic Wingback Armchair, Ottoman, Wooden Bench, Bar Stool, Wardrobe, Dresser, Nightstand, Wooden Cabinet, Bookshelf, Wooden Display Shelf, Steel Rack, Round Coffee Table, Coffee Table, Dining Table, Console Table, Side Table, Bed, Desk Lamp, Floor Lamp, Potted Plant, Wall Mirror, Checkout Counter.',
+    '4. Choose realistic physical dimensions `size: [width, height, depth]` in meters (e.g., 3-seat sofa ~ [2.1, 0.82, 0.92], accent chair ~ [0.82, 0.85, 0.82], coffee table ~ [1.1, 0.45, 0.6], wardrobe/cabinet ~ [1.1, 1.9, 0.55], display shelf ~ [1.0, 1.8, 0.4], floor lamp ~ [0.42, 1.65, 0.42], plant ~ [0.55, 1.25, 0.55]).',
+    '5. Keep `position[1] = 0` for floor-standing items. For `action: "replace"`, preserve the target object’s position and rotationY unless nudging slightly inside room bounds.',
+  ].join('\n');
+
+  const userPrompt = JSON.stringify(
+    {
+      command,
+      selectedObjectId: selectedObjectId ?? null,
+      replacementProduct: replacementProduct ?? null,
+      room: scene.room,
+      sceneObjects: scene.objects.map((o) => ({
+        id: o.id,
+        kind: o.kind,
+        label: o.label,
+        source: o.source,
+        position: o.position,
+        size: o.size,
+        rotationY: o.rotationY,
+      })),
+    },
+    null,
+    2
+  );
+
+  try {
+    const response = await withTimeout(
+      ai.models.generateContent({
+        model: PLAN_MODEL_ID,
+        contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+        config: {
+          systemInstruction,
+          responseMimeType: 'application/json',
+          responseSchema: REPLACE_RESPONSE_SCHEMA,
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          temperature: 0.15,
+        },
+      }),
+      timeoutMs,
+      requestId,
+      PLAN_MODEL_ID,
+      `${PLAN_MODEL_ID} object replacement`
+    );
+
+    const rawText = response.text?.trim();
+    if (!rawText) {
+      throw new GeminiServiceError({
+        code: 'INVALID_MODEL_JSON',
+        message: 'Replacement model returned an empty response.',
+        status: 502,
+        requestId,
+        modelAttempted: PLAN_MODEL_ID,
+      });
+    }
+
+    let parsedJson: unknown;
+    try {
+      parsedJson = JSON.parse(rawText);
+    } catch {
+      throw new GeminiServiceError({
+        code: 'INVALID_MODEL_JSON',
+        message: 'Replacement model returned malformed JSON.',
+        status: 502,
+        requestId,
+        modelAttempted: PLAN_MODEL_ID,
+      });
+    }
+
+    const checked = RawReplaceOutputSchema.safeParse(parsedJson);
+    if (!checked.success) {
+      throw new GeminiServiceError({
+        code: 'INVALID_MODEL_JSON',
+        message: `Replacement output failed schema validation: ${checked.error.issues[0]?.message ?? 'invalid structure'}`,
+        status: 502,
+        requestId,
+        modelAttempted: PLAN_MODEL_ID,
+      });
+    }
+
+    const { action, replacement, explanation } = checked.data;
+    const resolvedTargetId =
+      checked.data.targetObjectId ??
+      (action !== 'add' ? selectedObjectId ?? null : null);
+
+    let nextObjects = [...scene.objects];
+    let updatedObject: SceneObject | null = null;
+
+    if (action === 'remove' && resolvedTargetId) {
+      nextObjects = nextObjects.filter((o) => o.id !== resolvedTargetId);
+    } else if (action === 'replace' && replacement) {
+      const targetIdx = resolvedTargetId
+        ? nextObjects.findIndex((o) => o.id === resolvedTargetId)
+        : -1;
+
+      if (targetIdx >= 0) {
+        const existing = nextObjects[targetIdx];
+        const nextPos: Vec3 = replacement.position
+          ? [replacement.position[0], 0, replacement.position[2]]
+          : existing.position;
+        const nextRot =
+          typeof replacement.rotationY === 'number'
+            ? replacement.rotationY
+            : existing.rotationY;
+
+        const candidateObj = clampObjectInsideRoom(
+          {
+            ...existing,
+            kind: replacement.kind,
+            label: replacementProduct?.title || replacement.label,
+            source: replacementProduct?.product ? 'shopify' : 'proposal',
+            size: replacement.size,
+            position: nextPos,
+            rotationY: nextRot,
+            dimensionsVerified: false,
+            locked: false,
+            ...(replacementProduct?.product
+              ? { product: replacementProduct.product }
+              : { product: undefined }),
+          },
+          scene.room
+        );
+        nextObjects[targetIdx] = candidateObj;
+        updatedObject = candidateObj;
+      } else {
+        // Fallback to adding if no target object matched
+        const newId = `mockup-${Date.now()}`;
+        const candidateObj = clampObjectInsideRoom(
+          {
+            id: newId,
+            kind: replacement.kind,
+            label: replacementProduct?.title || replacement.label,
+            source: replacementProduct?.product ? 'shopify' : 'proposal',
+            position: replacement.position ?? [0, 0, 0],
+            size: replacement.size,
+            rotationY: replacement.rotationY ?? 0,
+            dimensionsVerified: false,
+            ...(replacementProduct?.product
+              ? { product: replacementProduct.product }
+              : {}),
+          },
+          scene.room
+        );
+        nextObjects.push(candidateObj);
+        updatedObject = candidateObj;
+      }
+    } else if (action === 'add' && replacement) {
+      const newId = `mockup-${Date.now()}`;
+      const candidateObj = clampObjectInsideRoom(
+        {
+          id: newId,
+          kind: replacement.kind,
+          label: replacementProduct?.title || replacement.label,
+          source: replacementProduct?.product ? 'shopify' : 'proposal',
+          position: replacement.position ?? [0, 0, 0],
+          size: replacement.size,
+          rotationY: replacement.rotationY ?? 0,
+          dimensionsVerified: false,
+          ...(replacementProduct?.product
+            ? { product: replacementProduct.product }
+            : {}),
+        },
+        scene.room
+      );
+      nextObjects.push(candidateObj);
+      updatedObject = candidateObj;
+    }
+
+    const nextScene = ShopSceneSchema.parse({
+      ...scene,
+      objects: nextObjects,
+    });
+
+    const validation = evaluateScene(nextScene);
+
+    logGeminiEvent({
+      requestId,
+      route: '/api/replace',
+      modelId: PLAN_MODEL_ID,
+      stage: 'complete',
+      durationMs: Date.now() - startMs,
+      meta: {
+        action,
+        valid: validation.valid,
+        errorCount: validation.summary.errorCount,
+      },
+    });
+
+    return {
+      scene: nextScene,
+      action,
+      targetObjectId: updatedObject?.id ?? resolvedTargetId,
+      replacedObject: updatedObject,
+      issues: validation.issues,
+      valid: validation.valid,
+      explanation,
+      modelUsed: PLAN_MODEL_ID,
+      requestId,
+    };
+  } catch (err) {
+    logGeminiEvent({
+      requestId,
+      route: '/api/replace',
+      modelId: PLAN_MODEL_ID,
+      stage: 'error',
+      durationMs: Date.now() - startMs,
+      meta: {
+        errorName: err instanceof Error ? err.name : 'UnknownError',
+      },
+    });
+    if (err instanceof GeminiServiceError) throw err;
+    throw new GeminiServiceError({
+      code: 'MODEL_ERROR',
+      message:
+        err instanceof Error
+          ? `3D mockup replacement failed: ${err.message}`
+          : '3D mockup replacement failed.',
+      status: 502,
+      requestId,
+      modelAttempted: PLAN_MODEL_ID,
+    });
+  }
+}

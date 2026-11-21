@@ -7,10 +7,12 @@ import {
   analyzeSpaceUrl,
   generateShopPlan,
   PLAN_MODEL_ID,
+  replaceObjectInScene,
 } from '@/lib/gemini';
 import { DEFAULT_MIN_WALKWAY_METERS, feetToMeters } from '@/lib/constraints';
 import { POST as analyzePOST } from './route';
 import { POST as planPOST } from '../plan/route';
+import { POST as replacePOST } from '../replace/route';
 
 describe('POST /api/analyze — multipart & YouTube JSON contracts (MediaIntakeModal + SetupWizard)', () => {
   it('extracts grounded observations inline and enforces uncalibrated warnings', async () => {
@@ -356,5 +358,55 @@ describe('POST /api/plan — ShopSceneSchema contract, MediaIntakeModal currentS
       size: [1.2, 0.95, 0.55],
       dimensionsVerified: true,
     });
+  });
+});
+
+describe('POST /api/replace — voice/text 3D object swap & mockup generator', () => {
+  it('replaces a selected object with a new 3D mockup while preserving position and clamping inside room bounds', async () => {
+    const generateContent = vi.fn().mockResolvedValue({
+      text: JSON.stringify({
+        action: 'replace',
+        targetObjectId: 'compact-proposal-table',
+        replacement: {
+          kind: 'table',
+          label: 'Cream Linen Lounge Sofa',
+          size: [1.85, 0.82, 0.88],
+        },
+        explanation:
+          'Replaced the display table with a Cream Linen Lounge Sofa mockup.',
+      }),
+    });
+
+    const result = await replaceObjectInScene(
+      {
+        command: 'Replace this with a cream linen lounge sofa',
+        scene: compactDemoScene,
+        selectedObjectId: 'compact-proposal-table',
+      },
+      {
+        requestId: 'test-replace-01',
+        clientOverride: { models: { generateContent } } as never,
+      }
+    );
+
+    expect(result.action).toBe('replace');
+    expect(result.targetObjectId).toBe('compact-proposal-table');
+    expect(result.replacedObject?.label).toBe('Cream Linen Lounge Sofa');
+    expect(result.replacedObject?.size).toEqual([1.85, 0.82, 0.88]);
+    expect(ShopSceneSchema.safeParse(result.scene).success).toBe(true);
+  });
+
+  it('returns 400 structured error JSON on empty /api/replace command', async () => {
+    const request = new Request('http://localhost:3000/api/replace', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command: '', scene: compactDemoScene }),
+    });
+
+    const response = await replacePOST(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(payload.error.code).toBe('INVALID_INPUT');
   });
 });

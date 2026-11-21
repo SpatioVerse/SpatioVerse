@@ -38,6 +38,10 @@ yarn-error.log*
 SpaceStage_Copy_Paste_Agent_Prompts.md
 SpaceStage_Team_Handoff_and_Agent_Prompts.docx
 ~$*
+test/*.MOV
+test/*.mov
+test/*.mp4
+test/*.webm
 
 # vercel
 .vercel
