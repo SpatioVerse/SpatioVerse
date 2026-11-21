@@ -549,6 +549,7 @@ export default function HomePage() {
           );
       updateObject(objectId, { ...patch, size: nextSize });
       selectObject(objectId);
+      useSceneStore.getState().addToCart(objectId);
 
       // Vision-based product photo -> closest 3D GLB + sampled color match
       const { setVisionModelOverride } = useSceneStore.getState();
@@ -688,6 +689,7 @@ export default function HomePage() {
         objects: deduplicateSceneObjects([...scene.objects, newObj]),
       });
       selectObject(newObj.id);
+      useSceneStore.getState().addToCart(newObj.id);
 
       // Vision + Decisions API (gemini-decision-1 + gemini-4-hydrogen) photo -> closest 3D GLB match
       const { setVisionModelOverride } = useSceneStore.getState();

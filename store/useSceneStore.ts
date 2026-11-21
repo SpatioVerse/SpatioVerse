@@ -182,8 +182,10 @@ export interface SceneStoreState {
   draftedDesignPrompt: DraftedDesignPrompt | null;
   /** Lock flag preventing concurrent/duplicate prompt renders while speaking */
   isRenderingPrompt: boolean;
-  /** Explicit object IDs currently in the user's shopping cart (added via Lock, removed via Delete) */
+  /** Explicit object IDs currently in the user's shopping cart */
   cartObjectIds: string[];
+  /** Direct Shopify products ordered via voice (even if not yet placed in 3D) */
+  voiceOrderItems: ProductRef[];
 
   hydrateFromStorage: () => void;
   selectObject: (id: string | null) => void;
@@ -236,6 +238,8 @@ export interface SceneStoreState {
   setIsRenderingPrompt: (rendering: boolean) => void;
   addToCart: (id: string) => void;
   removeFromCart: (id: string) => void;
+  setVoiceOrderItems: (items: ProductRef[]) => void;
+  removeVoiceOrderItem: (variantId: string) => void;
 
   bumpEditEpoch: () => number;
   setVoiceHighlightIds: (ids: string[]) => void;
@@ -303,6 +307,7 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
   draftedDesignPrompt: null,
   isRenderingPrompt: false,
   cartObjectIds: [],
+  voiceOrderItems: [],
 
   hydrateFromStorage: () => {
     if (typeof window === 'undefined') {
@@ -1206,6 +1211,20 @@ export const useSceneStore = create<SceneStoreState>((set, get) => ({
       return {
         scene: nextScene,
         cartObjectIds: state.cartObjectIds.filter((cid) => cid !== id),
+      };
+    });
+  },
+
+  setVoiceOrderItems: (items) => {
+    set({ voiceOrderItems: items });
+  },
+
+  removeVoiceOrderItem: (variantId) => {
+    set((state) => {
+      const next = state.voiceOrderItems.filter((p) => p.variantId !== variantId);
+      return {
+        voiceOrderItems: next,
+        ...(next.length === 0 ? { voiceOrderResult: null } : {}),
       };
     });
   },

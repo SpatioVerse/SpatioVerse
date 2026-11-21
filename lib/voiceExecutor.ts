@@ -862,6 +862,7 @@ export async function executeVoiceActionAsync(
         );
         store.updateObject(targetId, { ...patch, size: normalizedSize });
         store.selectObject(targetId);
+        store.addToCart(targetId);
         triggerVisionGlbMatch(targetId, product);
         return {
           ok: true,
@@ -925,6 +926,7 @@ export async function executeVoiceActionAsync(
       objects: deduplicateSceneObjects([...store.scene.objects, newObj]),
     });
     store.selectObject(newObj.id);
+    store.addToCart(newObj.id);
     triggerVisionGlbMatch(newObj.id, product);
 
     return {
@@ -1012,6 +1014,7 @@ export async function executeVoiceActionAsync(
         };
       }
 
+      store.setVoiceOrderItems(chosenProducts);
       store.setVoiceOrderResult({
         carts: data.carts,
         warnings: Array.isArray(data.warnings) ? data.warnings : [],

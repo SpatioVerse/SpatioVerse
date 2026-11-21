@@ -134,8 +134,10 @@ export function ProductPanel({
   const voiceShopQuery = useSceneStore((s) => s.voiceShopQuery);
   const voiceShopProducts = useSceneStore((s) => s.voiceShopProducts);
   const voiceOrderResult = useSceneStore((s) => s.voiceOrderResult);
+  const voiceOrderItems = useSceneStore((s) => s.voiceOrderItems);
   const cartObjectIds = useSceneStore((s) => s.cartObjectIds);
   const removeFromCart = useSceneStore((s) => s.removeFromCart);
+  const removeVoiceOrderItem = useSceneStore((s) => s.removeVoiceOrderItem);
   const setVoiceOrderResult = useSceneStore((s) => s.setVoiceOrderResult);
 
   const [customQuery, setCustomQuery] = useState<string | null>(null);
@@ -287,11 +289,12 @@ export function ProductPanel({
     });
   }, [activeProducts, loadedVariantsByProduct]);
 
-  // Separate owned fixtures ($0) from explicitly carted (locked) Shopify purchases.
-  const { ownedCount, shopifyObjects, newPurchaseTotalCents, totalCurrency } = useMemo(() => {
+  // Separate owned fixtures ($0) from carted Shopify purchases (scene cartObjectIds + direct voice orders).
+  const { ownedCount, shopifyObjects, extraVoiceProducts, newPurchaseTotalCents, totalCurrency } = useMemo(() => {
     let owned = 0;
     const cartItems: SceneObject[] = [];
     const cartIdSet = new Set(cartObjectIds);
+    const seenVariantIds = new Set<string>();
     let totalCents = 0;
     let currency = "USD";
 
@@ -302,25 +305,47 @@ export function ProductPanel({
       }
       if (obj.source === "shopify" && obj.product && cartIdSet.has(obj.id)) {
         cartItems.push(obj);
+        seenVariantIds.add(obj.product.variantId);
         totalCents += obj.product.priceCents;
         if (obj.product.currency) currency = obj.product.currency;
+      }
+    }
+
+    const extraVoice: ProductRef[] = [];
+    for (const p of voiceOrderItems) {
+      if (!seenVariantIds.has(p.variantId)) {
+        seenVariantIds.add(p.variantId);
+        extraVoice.push(p);
+        totalCents += p.priceCents;
+        if (p.currency) currency = p.currency;
       }
     }
 
     return {
       ownedCount: owned,
       shopifyObjects: cartItems,
+      extraVoiceProducts: extraVoice,
       newPurchaseTotalCents: totalCents,
       totalCurrency: currency,
     };
-  }, [scene.objects, cartObjectIds]);
+  }, [scene.objects, cartObjectIds, voiceOrderItems]);
+
+  const totalCartCount = shopifyObjects.length + extraVoiceProducts.length;
 
   const handleRemoveFromCart = (obj: SceneObject) => {
     removeFromCart(obj.id);
+    if (obj.product) {
+      removeVoiceOrderItem(obj.product.variantId);
+    }
     setInternalCartResult(null);
     if (voiceOrderResult) {
       setVoiceOrderResult(null);
     }
+  };
+
+  const handleRemoveVoiceProduct = (variantId: string) => {
+    removeVoiceOrderItem(variantId);
+    setInternalCartResult(null);
   };
 
   const handleFetchVariants = async (productId: string) => {
@@ -364,21 +389,30 @@ export function ProductPanel({
 
   const handleReviewCartClick = async () => {
     onReviewCart?.();
-    if (controlledCartResult !== undefined || shopifyObjects.length === 0) return;
+    if (controlledCartResult !== undefined || totalCartCount === 0) return;
 
     setCreatingCart(true);
     setCartError(null);
 
     try {
-      const lines = shopifyObjects
-        .filter((o): o is SceneObject & { product: ProductRef } => Boolean(o.product))
-        .map((o) => ({
-          variantId: o.product.variantId,
-          seller: o.product.seller,
-          sellerDomain: o.product.sellerDomain,
-          productUrl: o.product.productUrl,
+      const lines = [
+        ...shopifyObjects
+          .filter((o): o is SceneObject & { product: ProductRef } => Boolean(o.product))
+          .map((o) => ({
+            variantId: o.product.variantId,
+            seller: o.product.seller,
+            sellerDomain: o.product.sellerDomain,
+            productUrl: o.product.productUrl,
+            quantity: 1,
+          })),
+        ...extraVoiceProducts.map((p) => ({
+          variantId: p.variantId,
+          seller: p.seller,
+          sellerDomain: p.sellerDomain,
+          productUrl: p.productUrl,
           quantity: 1,
-        }));
+        })),
+      ];
 
       const res = await fetch("/api/cart", {
         method: "POST",
@@ -691,15 +725,15 @@ export function ProductPanel({
             <span className="font-medium text-zinc-300">{formatMoney(0, totalCurrency)}</span>
           </div>
           <div className="flex items-center justify-between text-sm font-semibold text-zinc-100">
-            <span>Cart items ({shopifyObjects.length})</span>
+            <span>Cart items ({totalCartCount})</span>
             <span className="text-amber-200">
               {formatMoney(newPurchaseTotalCents, totalCurrency)}
             </span>
           </div>
         </div>
 
-        {shopifyObjects.length > 0 && (
-          <ul className="mt-2 max-h-32 space-y-1 overflow-y-auto pr-0.5">
+        {totalCartCount > 0 && (
+          <ul className="mt-2 max-h-36 space-y-1 overflow-y-auto pr-0.5">
             {shopifyObjects.map((obj) => (
               <li
                 key={obj.id}
@@ -724,18 +758,40 @@ export function ProductPanel({
                 </button>
               </li>
             ))}
+            {extraVoiceProducts.map((p) => (
+              <li
+                key={p.variantId}
+                className="flex items-center justify-between gap-2 rounded-lg border border-zinc-800 bg-zinc-950/75 px-2 py-1 text-[11px]"
+              >
+                <span className="min-w-0 flex-1 truncate text-zinc-200">
+                  {p.title}
+                </span>
+                <span className="shrink-0 font-medium text-amber-200">
+                  {formatMoney(p.priceCents, p.currency)}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleRemoveVoiceProduct(p.variantId)}
+                  title="Delete item from cart"
+                  aria-label={`Delete ${p.title} from cart`}
+                  className="shrink-0 cursor-pointer rounded bg-red-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-red-300 transition hover:bg-red-500/30 hover:text-red-100"
+                >
+                  Delete
+                </button>
+              </li>
+            ))}
           </ul>
         )}
 
-        {shopifyObjects.length === 0 && (
+        {totalCartCount === 0 && (
           <p className="mt-2 text-[11px] text-zinc-400">
-            Cart is empty. Lock a Shopify fixture in the 3D scene to add only that item to your cart.
+            Cart is empty. Add, replace, or lock a Shopify item to add it to your cart.
           </p>
         )}
 
         <button
           type="button"
-          disabled={creatingCart || shopifyObjects.length === 0}
+          disabled={creatingCart || totalCartCount === 0}
           onClick={() => void handleReviewCartClick()}
           className="mt-3 w-full rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-400 disabled:cursor-not-allowed disabled:opacity-40"
         >
