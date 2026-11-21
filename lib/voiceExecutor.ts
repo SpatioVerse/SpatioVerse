@@ -124,12 +124,15 @@ export function executeVoiceAction(
         };
       }
 
-      const currentPos =
-        store.voicePreview?.objectId === targetId
+      const multiDelta = store.voicePreview?.objectPoses?.[targetId];
+      const currentPos = multiDelta
+        ? multiDelta.previewPosition
+        : store.voicePreview?.objectId === targetId
           ? store.voicePreview.previewPosition
           : obj.position;
-      const currentYaw =
-        store.voicePreview?.objectId === targetId
+      const currentYaw = multiDelta
+        ? multiDelta.previewRotationY
+        : store.voicePreview?.objectId === targetId
           ? store.voicePreview.previewRotationY
           : obj.rotationY;
 
@@ -294,12 +297,15 @@ export function executeVoiceAction(
         };
       }
 
-      const currentPos =
-        store.voicePreview?.objectId === targetId
+      const multiDelta = store.voicePreview?.objectPoses?.[targetId];
+      const currentPos = multiDelta
+        ? multiDelta.previewPosition
+        : store.voicePreview?.objectId === targetId
           ? store.voicePreview.previewPosition
           : obj.position;
-      const currentYaw =
-        store.voicePreview?.objectId === targetId
+      const currentYaw = multiDelta
+        ? multiDelta.previewRotationY
+        : store.voicePreview?.objectId === targetId
           ? store.voicePreview.previewRotationY
           : obj.rotationY;
 
@@ -435,6 +441,78 @@ export function executeVoiceAction(
         actionType: action.type,
         updatedPreferredLanguage: action.language,
         summary: `Switched reply language preference to ${action.language}.`,
+      };
+    }
+
+    case 'suggest_layouts': {
+      const options = store.generateLayoutOptions();
+      if (options.length === 0) {
+        return {
+          ok: false,
+          actionType: action.type,
+          summary:
+            'No additional valid layout alternatives are feasible with the current room size, locked items, and clearance constraints.',
+        };
+      }
+      const listSummary = options
+        .map(
+          (o) =>
+            `Option ${o.index}: "${o.name}" (${o.metricsSummary}) — Tradeoff: ${o.tradeoff}`
+        )
+        .join(' | ');
+      return {
+        ok: true,
+        valid: true,
+        actionType: action.type,
+        summary: `Generated ${options.length} validated layout option${options.length === 1 ? '' : 's'}: ${listSummary}`,
+      };
+    }
+
+    case 'preview_layout_option': {
+      const outcome = store.previewLayoutOption(action.optionIndex);
+      if (!outcome.applied || !outcome.preview) {
+        return {
+          ok: false,
+          actionType: action.type,
+          summary:
+            outcome.reason ??
+            `Layout option ${action.optionIndex} is not available.`,
+        };
+      }
+      return {
+        ok: true,
+        valid: !outcome.preview.issues.some((i) => i.severity === 'error'),
+        actionType: action.type,
+        objectId: outcome.preview.objectId,
+        summary: outcome.preview.lastActionSummary,
+      };
+    }
+
+    case 'preview_proactive_suggestion': {
+      const outcome = store.previewProactiveSuggestion();
+      if (!outcome.applied || !outcome.preview) {
+        return {
+          ok: false,
+          stale: outcome.stale,
+          actionType: action.type,
+          summary: outcome.reason ?? 'No active suggestion to preview.',
+        };
+      }
+      return {
+        ok: true,
+        valid: !outcome.preview.issues.some((i) => i.severity === 'error'),
+        actionType: action.type,
+        objectId: outcome.preview.objectId,
+        summary: outcome.preview.lastActionSummary,
+      };
+    }
+
+    case 'dismiss_proactive_suggestion': {
+      store.dismissProactiveSuggestion();
+      return {
+        ok: true,
+        actionType: action.type,
+        summary: 'Dismissed suggestion and will not repeat it unless the room changes.',
       };
     }
   }

@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   Check,
   Keyboard,
+  LayoutGrid,
   Loader2,
   Mic,
   MicOff,
@@ -20,6 +21,8 @@ import {
   captureCanvasFrameBase64,
   getCameraBasis,
 } from '@/lib/cameraBridge';
+import type { LayoutOption } from '@/lib/layoutSuggestions';
+import type { ShopScene } from '@/lib/schema';
 import type { VoiceCommandResponse } from '@/lib/voiceActions';
 import {
   executeVoiceAction,
@@ -36,12 +39,109 @@ interface ChatTurn {
   text: string;
 }
 
+function LayoutThumbnail({
+  scene,
+  option,
+}: {
+  scene: ShopScene;
+  option: LayoutOption;
+}) {
+  const w = 52;
+  const h = 42;
+  const pad = 4;
+  const rw = Math.max(0.1, scene.room.width);
+  const rd = Math.max(0.1, scene.room.depth);
+  const scale = Math.min((w - pad * 2) / rw, (h - pad * 2) / rd);
+  const boxW = rw * scale;
+  const boxH = rd * scale;
+  const ox = (w - boxW) / 2;
+  const oy = (h - boxH) / 2;
+
+  const toX = (x: number) => ox + (x + rw / 2) * scale;
+  const toY = (z: number) => oy + (z + rd / 2) * scale;
+  const movedSet = new Set(option.movedObjectIds);
+
+  const { entrance } = scene.room;
+  const halfDoor = (entrance.width / 2) * scale;
+  let door = { x1: ox, y1: oy + boxH, x2: ox + boxW, y2: oy + boxH };
+  if (entrance.wall === 'south') {
+    const cx = toX(entrance.offset);
+    door = { x1: cx - halfDoor, y1: oy + boxH, x2: cx + halfDoor, y2: oy + boxH };
+  } else if (entrance.wall === 'north') {
+    const cx = toX(entrance.offset);
+    door = { x1: cx - halfDoor, y1: oy, x2: cx + halfDoor, y2: oy };
+  } else if (entrance.wall === 'east') {
+    const cy = toY(entrance.offset);
+    door = { x1: ox + boxW, y1: cy - halfDoor, x2: ox + boxW, y2: cy + halfDoor };
+  } else {
+    const cy = toY(entrance.offset);
+    door = { x1: ox, y1: cy - halfDoor, x2: ox, y2: cy + halfDoor };
+  }
+
+  return (
+    <svg
+      width={w}
+      height={h}
+      viewBox={`0 0 ${w} ${h}`}
+      className="shrink-0 rounded-lg border border-white/10 bg-black/50"
+      aria-hidden="true"
+    >
+      <rect
+        x={ox}
+        y={oy}
+        width={boxW}
+        height={boxH}
+        fill="rgba(255,255,255,0.04)"
+        stroke="rgba(255,255,255,0.25)"
+        strokeWidth={0.8}
+        rx={1.5}
+      />
+      <line
+        x1={door.x1}
+        y1={door.y1}
+        x2={door.x2}
+        y2={door.y2}
+        stroke="#34d399"
+        strokeWidth={2}
+        strokeLinecap="round"
+      />
+      {scene.objects.map((obj) => {
+        const pose = option.poses[obj.id] ?? {
+          position: obj.position,
+          rotationY: obj.rotationY,
+        };
+        const cx = toX(pose.position[0]);
+        const cy = toY(pose.position[2]);
+        const fw = Math.max(3, obj.size[0] * scale);
+        const fd = Math.max(3, obj.size[2] * scale);
+        const deg = (-pose.rotationY * 180) / Math.PI;
+        const isMoved = movedSet.has(obj.id);
+        return (
+          <rect
+            key={obj.id}
+            x={cx - fw / 2}
+            y={cy - fd / 2}
+            width={fw}
+            height={fd}
+            transform={`rotate(${deg} ${cx} ${cy})`}
+            fill={isMoved ? 'rgba(56,189,248,0.85)' : 'rgba(255,255,255,0.38)'}
+            rx={0.8}
+          />
+        );
+      })}
+    </svg>
+  );
+}
+
 export function VoiceRoomControl() {
   const scene = useSceneStore((state) => state.scene);
   const selectedId = useSceneStore((state) => state.selectedId);
   const isDragging = useSceneStore((state) => state.isDragging);
   const voicePreview = useSceneStore((state) => state.voicePreview);
   const voiceHighlightIds = useSceneStore((state) => state.voiceHighlightIds);
+  const layoutOptions = useSceneStore((state) => state.layoutOptions);
+  const proactiveSuggestion = useSceneStore((state) => state.proactiveSuggestion);
+  const proactiveTick = useSceneStore((state) => state.proactiveTick);
   const undoCount = useSceneStore((state) => state.undoStack.length);
 
   const freezeVoicePreview = useSceneStore((state) => state.freezeVoicePreview);
@@ -50,12 +150,25 @@ export function VoiceRoomControl() {
   );
   const commitVoicePreview = useSceneStore((state) => state.commitVoicePreview);
   const cancelVoicePreview = useSceneStore((state) => state.cancelVoicePreview);
+  const generateLayoutOptions = useSceneStore(
+    (state) => state.generateLayoutOptions
+  );
+  const previewLayoutOption = useSceneStore((state) => state.previewLayoutOption);
+  const clearLayoutOptions = useSceneStore((state) => state.clearLayoutOptions);
+  const previewProactiveSuggestion = useSceneStore(
+    (state) => state.previewProactiveSuggestion
+  );
+  const dismissProactiveSuggestion = useSceneStore(
+    (state) => state.dismissProactiveSuggestion
+  );
   const undo = useSceneStore((state) => state.undo);
 
   const clientRef = useRef<VoiceLiveClient | null>(null);
+  const lastAnnouncedTickRef = useRef<number>(0);
   const [phase, setPhase] = useState<VoiceSessionPhase>('idle');
   const [micLevel, setMicLevel] = useState(0);
   const [connectedModel, setConnectedModel] = useState<string | null>(null);
+  const [activeVoiceName, setActiveVoiceName] = useState<string>('Sulafat');
   const [preferredLanguage, setPreferredLanguage] = useState<string | null>(null);
   const [userHeard, setUserHeard] = useState<string>('');
   const [roomReply, setRoomReply] = useState<string>('');
@@ -72,14 +185,48 @@ export function VoiceRoomControl() {
     phase === 'thinking' ||
     phase === 'speaking';
 
-  // Sync manual selection/drag/preview changes to active live session
+  // Sync manual selection/drag/preview/layout changes to active live session
   useEffect(() => {
     if (!isSessionActive || !clientRef.current) return;
     if (isDragging) {
       clientRef.current.interruptSpeech();
     }
     clientRef.current.syncRoomContext();
-  }, [isSessionActive, selectedId, isDragging, voicePreview]);
+  }, [
+    isSessionActive,
+    selectedId,
+    isDragging,
+    voicePreview,
+    layoutOptions,
+    proactiveSuggestion,
+  ]);
+
+  // Speak proactive suggestion aloud ONLY after user finishes dragging & speaking
+  useEffect(() => {
+    if (
+      !proactiveSuggestion ||
+      proactiveTick === 0 ||
+      proactiveTick === lastAnnouncedTickRef.current ||
+      isDragging
+    ) {
+      return;
+    }
+
+    if (isSessionActive && clientRef.current && phase === 'listening') {
+      const prompt = proactiveSuggestion.spokenPrompt;
+      const tickSnapshot = proactiveTick;
+      const timer = window.setTimeout(() => {
+        if (
+          !useSceneStore.getState().isDragging &&
+          clientRef.current?.announceProactiveSuggestion(prompt)
+        ) {
+          lastAnnouncedTickRef.current = tickSnapshot;
+        }
+      }, 350);
+      return () => window.clearTimeout(timer);
+    }
+    return undefined;
+  }, [proactiveSuggestion, proactiveTick, isDragging, isSessionActive, phase]);
 
   // Global Cmd+Z / Ctrl+Z undo shortcut when not typing inside an input
   useEffect(() => {
@@ -141,7 +288,10 @@ export function VoiceRoomControl() {
         },
         onActionResult: handleActionFeedback,
         onMicLevel: (lvl) => setMicLevel(lvl),
-        onModelConnected: (model) => setConnectedModel(model),
+        onModelConnected: (model, voiceName) => {
+          setConnectedModel(model);
+          setActiveVoiceName(voiceName);
+        },
         onPreferredLanguageChange: (lang) => setPreferredLanguage(lang),
         onError: (message, fallbackToText) => {
           setErrorBanner(message);
@@ -206,6 +356,20 @@ export function VoiceRoomControl() {
             selectedId: store.selectedId,
             cameraBasis: getCameraBasis(),
             activePreview: store.voicePreview,
+            layoutOptions: store.layoutOptions.map((o) => ({
+              index: o.index,
+              name: o.name,
+              tradeoff: o.tradeoff,
+              metricsSummary: o.metricsSummary,
+            })),
+            proactiveSuggestion: store.proactiveSuggestion
+              ? {
+                  title: store.proactiveSuggestion.title,
+                  spokenPrompt: store.proactiveSuggestion.spokenPrompt,
+                  objectId: store.proactiveSuggestion.objectId,
+                  targetLabel: store.proactiveSuggestion.targetLabel,
+                }
+              : null,
             canUndo: store.undoStack.length > 0,
             preferredLanguage,
             history: history.slice(-8),
@@ -291,6 +455,8 @@ export function VoiceRoomControl() {
   const panelExpanded =
     isSessionActive ||
     Boolean(voicePreview) ||
+    layoutOptions.length > 0 ||
+    Boolean(proactiveSuggestion) ||
     voiceHighlightIds.length > 0 ||
     showTypedBox ||
     Boolean(errorBanner) ||
@@ -436,6 +602,122 @@ export function VoiceRoomControl() {
               </div>
             )}
 
+            {/* Proactive Room Improvement Suggestion Card */}
+            {proactiveSuggestion && !voicePreview && (
+              <div className="space-y-2 rounded-xl border border-emerald-400/35 bg-emerald-950/40 p-2.5">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-200">
+                      <Sparkles className="h-3.5 w-3.5 shrink-0 text-emerald-300" />
+                      <span className="truncate">{proactiveSuggestion.title}</span>
+                    </div>
+                    <p className="mt-0.5 text-[10px] leading-snug text-zinc-200">
+                      {proactiveSuggestion.spokenPrompt}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={dismissProactiveSuggestion}
+                    aria-label="Dismiss suggestion"
+                    className="flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-zinc-400 hover:bg-white/10 hover:text-white"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const res = previewProactiveSuggestion();
+                      if (res.applied) {
+                        setLastActionNote(
+                          res.preview?.lastActionSummary ?? 'Previewing suggestion'
+                        );
+                      }
+                    }}
+                    className="flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-lg bg-emerald-400 px-2.5 py-1.5 text-[11px] font-semibold text-zinc-950 transition-colors hover:bg-emerald-300"
+                  >
+                    <Sparkles className="h-3 w-3" />
+                    <span>Preview suggestion</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={dismissProactiveSuggestion}
+                    className="cursor-pointer rounded-lg border border-white/15 bg-white/8 px-2.5 py-1.5 text-[11px] font-medium text-zinc-200 transition-colors hover:bg-white/15"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Numbered Validated Layout Options with 2D Thumbnails */}
+            {layoutOptions.length > 0 && (
+              <div className="space-y-1.5 rounded-xl border border-white/10 bg-black/35 p-2">
+                <div className="flex items-center justify-between px-0.5">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
+                    Validated Layout Options ({layoutOptions.length})
+                  </span>
+                  <button
+                    type="button"
+                    onClick={clearLayoutOptions}
+                    className="cursor-pointer text-[10px] text-zinc-400 hover:text-white"
+                  >
+                    Hide
+                  </button>
+                </div>
+                <div className="space-y-1.5">
+                  {layoutOptions.map((opt) => {
+                    const isActive = voicePreview?.layoutOptionIndex === opt.index;
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => {
+                          const res = previewLayoutOption(opt.index);
+                          if (res.applied) {
+                            setLastActionNote(
+                              res.preview?.lastActionSummary ??
+                                `Previewing Option ${opt.index}`
+                            );
+                          }
+                        }}
+                        className={`flex w-full cursor-pointer items-start gap-2 rounded-xl border p-1.5 text-left transition-all ${
+                          isActive
+                            ? 'border-sky-400/60 bg-sky-500/18'
+                            : 'border-white/10 bg-white/[0.03] hover:border-white/25 hover:bg-white/[0.07]'
+                        }`}
+                      >
+                        <LayoutThumbnail scene={scene} option={opt} />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${
+                                isActive
+                                  ? 'bg-sky-400 text-zinc-950'
+                                  : 'bg-white/15 text-white'
+                              }`}
+                            >
+                              {opt.index}
+                            </span>
+                            <span className="truncate text-[11px] font-semibold text-white">
+                              {opt.name}
+                            </span>
+                          </div>
+                          <div className="mt-0.5 text-[9.5px] font-medium text-emerald-300/90">
+                            {opt.metricsSummary}
+                          </div>
+                          <p className="mt-0.5 line-clamp-2 text-[9.5px] leading-snug text-zinc-400">
+                            {opt.tradeoff}
+                          </p>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* Active Translucent Preview Controls (Stop / Alternative / Keep / Cancel) */}
             {voicePreview && (
               <div className="space-y-2 rounded-xl border border-sky-400/30 bg-sky-950/35 p-2.5">
@@ -554,7 +836,9 @@ export function VoiceRoomControl() {
 
             {connectedModel && (
               <div className="flex items-center justify-between text-[9px] text-zinc-500">
-                <span>Live model: {connectedModel}</span>
+                <span>
+                  {connectedModel} · Voice: {activeVoiceName}
+                </span>
                 <span>Original stays visible until kept</span>
               </div>
             )}
@@ -578,6 +862,29 @@ export function VoiceRoomControl() {
             </span>
           </button>
         )}
+
+        <button
+          type="button"
+          onClick={() => {
+            const opts = generateLayoutOptions();
+            if (opts.length > 0) {
+              setLastActionNote(
+                `Generated ${opts.length} validated layout option${opts.length === 1 ? '' : 's'}`
+              );
+            } else {
+              setLastActionNote('No additional feasible layouts found.');
+            }
+          }}
+          title="Suggest validated room layouts"
+          aria-label="Suggest validated room layouts"
+          className={`flex h-10 w-10 cursor-pointer items-center justify-center rounded-2xl border shadow-[0_12px_36px_rgba(0,0,0,0.45)] backdrop-blur-xl transition-colors ${
+            layoutOptions.length > 0
+              ? 'border-emerald-400/45 bg-emerald-500/20 text-emerald-200'
+              : 'border-white/14 bg-zinc-950/82 text-zinc-300 hover:bg-zinc-900 hover:text-white'
+          }`}
+        >
+          <LayoutGrid className="h-4 w-4" />
+        </button>
 
         <button
           type="button"

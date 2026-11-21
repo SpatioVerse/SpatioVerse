@@ -34,6 +34,25 @@ const RequestBodySchema = z.object({
   selectedId: z.string().nullable(),
   cameraBasis: CameraBasisSchema,
   activePreview: z.unknown().nullable().optional(),
+  layoutOptions: z
+    .array(
+      z.object({
+        index: z.number().int(),
+        name: z.string(),
+        tradeoff: z.string(),
+        metricsSummary: z.string(),
+      })
+    )
+    .optional(),
+  proactiveSuggestion: z
+    .object({
+      title: z.string(),
+      spokenPrompt: z.string(),
+      objectId: z.string(),
+      targetLabel: z.string(),
+    })
+    .nullable()
+    .optional(),
   canUndo: z.boolean().default(false),
   preferredLanguage: z.string().nullable().optional(),
   history: z.array(HistoryItemSchema).max(12).default([]),
@@ -164,6 +183,29 @@ const RESPONSE_JSON_SCHEMA = {
             },
             required: ['type', 'language'],
           },
+          {
+            type: 'object',
+            properties: { type: { const: 'suggest_layouts' } },
+            required: ['type'],
+          },
+          {
+            type: 'object',
+            properties: {
+              type: { const: 'preview_layout_option' },
+              optionIndex: { type: 'integer', minimum: 1, maximum: 3 },
+            },
+            required: ['type', 'optionIndex'],
+          },
+          {
+            type: 'object',
+            properties: { type: { const: 'preview_proactive_suggestion' } },
+            required: ['type'],
+          },
+          {
+            type: 'object',
+            properties: { type: { const: 'dismiss_proactive_suggestion' } },
+            required: ['type'],
+          },
         ],
       },
     },
@@ -264,6 +306,8 @@ export async function POST(request: Request): Promise<NextResponse> {
     activePreview: (data.activePreview as VoicePreviewState | null) ?? null,
     preferredLanguage: data.preferredLanguage ?? null,
     canUndo: data.canUndo,
+    layoutOptions: data.layoutOptions ?? [],
+    proactiveSuggestion: data.proactiveSuggestion ?? null,
   });
 
   const systemInstruction = `${buildVoiceSystemInstruction(contextJson)}

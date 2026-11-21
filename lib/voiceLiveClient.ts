@@ -38,7 +38,7 @@ export interface VoiceLiveCallbacks {
   onAssistantTranscript: (text: string, isFinal: boolean) => void;
   onActionResult: (result: ActionExecutionResult) => void;
   onMicLevel: (level: number) => void;
-  onModelConnected: (model: string) => void;
+  onModelConnected: (model: string, voiceName: string) => void;
   onPreferredLanguageChange: (language: string) => void;
   onError: (message: string, fallbackToText?: boolean) => void;
   onClose: () => void;
@@ -186,6 +186,48 @@ const LIVE_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
       required: ['language'],
     },
   },
+  {
+    name: 'suggest_layouts',
+    description:
+      'Generate up to 3 validated, genuinely different room layouts using current furniture, locked items, budget, and clearances. Returns stable numbered options (1, 2, 3) with goal names and one concrete tradeoff each.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
+  {
+    name: 'preview_layout_option',
+    description:
+      'Preview a specific numbered layout option (1, 2, or 3) directly in the 3D room (e.g. "Show me the second one", "दूसरा वाला दिखाओ"). Does NOT commit it yet.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        optionIndex: {
+          type: Type.INTEGER,
+          description: 'Stable 1-based option number (1, 2, or 3).',
+        },
+      },
+      required: ['optionIndex'],
+    },
+  },
+  {
+    name: 'preview_proactive_suggestion',
+    description:
+      'Immediately preview the active proactive improvement suggestion in 3D when the user agrees (e.g. "Show me", "हाँ, दिखाओ").',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
+  {
+    name: 'dismiss_proactive_suggestion',
+    description:
+      'Dismiss the active proactive improvement suggestion when the user declines (e.g. "No thanks", "रहने दो").',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
 ];
 
 function float32ToInt16Downsampled(
@@ -271,6 +313,7 @@ export class VoiceLiveClient {
   private phase: VoiceSessionPhase = 'idle';
   private closed = false;
   private preferredLanguage: string | null = null;
+  private voiceName: string = 'Sulafat';
   private userTranscriptBuffer = '';
   private assistantTranscriptBuffer = '';
   private lastFrameSentAt = 0;
@@ -334,6 +377,7 @@ export class VoiceLiveClient {
       token: string;
       model: string;
       fallbackModel?: string;
+      voiceName?: string;
     };
     try {
       const res = await fetch('/api/voice/token', { method: 'POST' });
@@ -341,6 +385,7 @@ export class VoiceLiveClient {
         token?: string;
         model?: string;
         fallbackModel?: string;
+        voiceName?: string;
         error?: { message?: string };
       };
       if (!res.ok || !json.token || !json.model) {
@@ -352,7 +397,11 @@ export class VoiceLiveClient {
         token: json.token,
         model: json.model,
         fallbackModel: json.fallbackModel,
+        voiceName: json.voiceName,
       };
+      if (json.voiceName) {
+        this.voiceName = json.voiceName;
+      }
     } catch (err) {
       this.cleanupAudio();
       const msg =
@@ -394,25 +443,43 @@ export class VoiceLiveClient {
       return;
     }
 
-    this.callbacks.onModelConnected(connectedModel);
+    this.callbacks.onModelConnected(connectedModel, this.voiceName);
     this.startMicStreaming();
     this.sendCanvasFrameIfReady(true);
     this.setPhase('listening');
   }
 
-  private async connectLiveModel(
-    ephemeralToken: string,
-    model: string
-  ): Promise<void> {
+  private buildCurrentContextJson(): string {
     const store = useSceneStore.getState();
-    const initialContext = formatGroundedRoomContext({
+    return formatGroundedRoomContext({
       scene: store.scene,
       selectedId: store.selectedId,
       cameraBasis: getCameraBasis(),
       activePreview: store.voicePreview,
       preferredLanguage: this.preferredLanguage,
       canUndo: store.undoStack.length > 0,
+      layoutOptions: store.layoutOptions.map((o) => ({
+        index: o.index,
+        name: o.name,
+        tradeoff: o.tradeoff,
+        metricsSummary: o.metricsSummary,
+      })),
+      proactiveSuggestion: store.proactiveSuggestion
+        ? {
+            title: store.proactiveSuggestion.title,
+            spokenPrompt: store.proactiveSuggestion.spokenPrompt,
+            objectId: store.proactiveSuggestion.objectId,
+            targetLabel: store.proactiveSuggestion.targetLabel,
+          }
+        : null,
     });
+  }
+
+  private async connectLiveModel(
+    ephemeralToken: string,
+    model: string
+  ): Promise<void> {
+    const initialContext = this.buildCurrentContextJson();
 
     const ai = new GoogleGenAI({
       apiKey: ephemeralToken,
@@ -433,6 +500,13 @@ export class VoiceLiveClient {
           model,
           config: {
             responseModalities: [Modality.AUDIO],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: {
+                  voiceName: this.voiceName,
+                },
+              },
+            },
             inputAudioTranscription: {},
             outputAudioTranscription: {},
             systemInstruction: buildVoiceSystemInstruction(initialContext),
@@ -717,15 +791,7 @@ export class VoiceLiveClient {
    */
   public syncRoomContext(): void {
     if (this.closed || !this.session) return;
-    const store = useSceneStore.getState();
-    const ctxJson = formatGroundedRoomContext({
-      scene: store.scene,
-      selectedId: store.selectedId,
-      cameraBasis: getCameraBasis(),
-      activePreview: store.voicePreview,
-      preferredLanguage: this.preferredLanguage,
-      canUndo: store.undoStack.length > 0,
-    });
+    const ctxJson = this.buildCurrentContextJson();
 
     try {
       this.session.sendClientContent({
@@ -734,6 +800,27 @@ export class VoiceLiveClient {
       });
     } catch {
       // Ignore if closing
+    }
+  }
+
+  /**
+   * Speaks a validated proactive suggestion aloud ONLY when the user has
+   * finished dragging/speaking (phase === 'listening' and no active speech).
+   */
+  public announceProactiveSuggestion(spokenPrompt: string): boolean {
+    if (this.closed || !this.session) return false;
+    if (this.phase !== 'listening' || this.activeSources.size > 0) {
+      return false;
+    }
+    this.syncRoomContext();
+    try {
+      this.session.sendClientContent({
+        turns: `[PROACTIVE ROOM OBSERVATION] Briefly share this validated suggestion aloud in the user's current language (1-2 short warm sentences, ending by asking if they want to see it): ${spokenPrompt}`,
+        turnComplete: true,
+      });
+      return true;
+    } catch {
+      return false;
     }
   }
 

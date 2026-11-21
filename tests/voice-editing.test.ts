@@ -196,4 +196,98 @@ describe('Voice-editing multi-turn preview, stop vs commit, alternatives, stale 
     expect(staleAttempt.stale).toBe(true);
     expect(useSceneStore.getState().voicePreview).toBeNull();
   });
+
+  it('generates validated distinct layout options respecting locked items, refines Option 2 counter, commits as 1 edit, and undoes cleanly', () => {
+    // Lock one fixture to verify layout generator never moves locked items
+    const store = useSceneStore.getState();
+    const lockedId = 'compact-proposal-plant';
+    store.toggleLock(lockedId);
+    const lockedStart = [
+      ...useSceneStore
+        .getState()
+        .scene.objects.find((o) => o.id === lockedId)!.position,
+    ];
+    const originalSnapshot = structuredClone(useSceneStore.getState().scene.objects);
+
+    // 1. "Show me a few layouts"
+    const sRes = executeVoiceAction({ type: 'suggest_layouts' });
+    expect(sRes.ok).toBe(true);
+    const options = useSceneStore.getState().layoutOptions;
+    expect(options.length).toBeGreaterThanOrEqual(2);
+    expect(options.length).toBeLessThanOrEqual(3);
+    for (const opt of options) {
+      expect(opt.movedObjectIds).not.toContain(lockedId);
+      expect(opt.poses[lockedId].position).toEqual(lockedStart);
+      expect(opt.tradeoff.length).toBeGreaterThan(10);
+    }
+
+    // 2. "दूसरा वाला दिखाओ" (Option 2 preview)
+    const pRes = executeVoiceAction({
+      type: 'preview_layout_option',
+      optionIndex: 2,
+    });
+    expect(pRes.ok).toBe(true);
+    expect(pRes.valid).toBe(true);
+    expect(useSceneStore.getState().voicePreview?.layoutOptionIndex).toBe(2);
+    // Committed scene is still untouched
+    expect(useSceneStore.getState().scene.objects).toEqual(originalSnapshot);
+
+    // 3. "Keep this one, but rotate the counter" (refines counter inside same preview, waits for confirmation)
+    const counterId = 'compact-owned-counter';
+    const rRes = executeVoiceAction({
+      type: 'preview_rotate',
+      objectId: counterId,
+      mode: 'relative',
+      deltaDegrees: 90,
+    });
+    expect(rRes.ok).toBe(true);
+    const activePreview = useSceneStore.getState().voicePreview!;
+    expect(activePreview.layoutOptionIndex).toBe(2);
+    expect(activePreview.objectPoses?.[counterId]).toBeDefined();
+    expect(useSceneStore.getState().undoStack).toHaveLength(0);
+
+    // 4. "Apply it" commits the entire refined Option 2 as ONE undoable step
+    const cRes = executeVoiceAction({ type: 'commit_preview' });
+    expect(cRes.ok).toBe(true);
+    expect(useSceneStore.getState().voicePreview).toBeNull();
+    expect(useSceneStore.getState().undoStack).toHaveLength(1);
+
+    // 5. "Undo" restores the exact original room layout
+    const uRes = executeVoiceAction({ type: 'undo_last_edit' });
+    expect(uRes.ok).toBe(true);
+    expect(useSceneStore.getState().scene.objects).toEqual(originalSnapshot);
+  });
+
+  it('proactively suggests a validated improvement after dragging a shelf near the entrance, previews on "Show me", and respects dismissal', () => {
+    const shelfId = 'compact-owned-shelf';
+    useSceneStore.getState().selectObject(shelfId);
+
+    // Simulate user dragging shelf into the south entrance zone, then releasing drag
+    useSceneStore.getState().setDragging(true);
+    useSceneStore.getState().moveObject(shelfId, [0, 0, 1.1]);
+    useSceneStore.getState().setDragging(false);
+
+    const suggestion = useSceneStore.getState().proactiveSuggestion;
+    expect(suggestion).not.toBeNull();
+    expect(suggestion?.objectId).toBe(shelfId);
+    expect(suggestion?.spokenPrompt.toLowerCase()).toContain('want to see it');
+
+    // User says "Show me" -> previews the exact validated improvement
+    const pRes = executeVoiceAction({ type: 'preview_proactive_suggestion' });
+    expect(pRes.ok).toBe(true);
+    expect(pRes.valid).toBe(true);
+    expect(useSceneStore.getState().voicePreview?.objectId).toBe(shelfId);
+
+    // Cancel preview, re-trigger suggestion, then dismiss -> stays quiet on unchanged room
+    executeVoiceAction({ type: 'cancel_preview' });
+    useSceneStore.getState().evaluateProactiveSuggestion(shelfId);
+    expect(useSceneStore.getState().proactiveSuggestion).not.toBeNull();
+
+    executeVoiceAction({ type: 'dismiss_proactive_suggestion' });
+    expect(useSceneStore.getState().proactiveSuggestion).toBeNull();
+
+    // Re-evaluating the exact same unchanged room must NOT repeat dismissed suggestion
+    useSceneStore.getState().evaluateProactiveSuggestion(shelfId);
+    expect(useSceneStore.getState().proactiveSuggestion).toBeNull();
+  });
 });

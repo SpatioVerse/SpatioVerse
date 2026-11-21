@@ -9,6 +9,8 @@ const PRIMARY_LIVE_MODEL =
 const FALLBACK_LIVE_MODEL =
   process.env.VOICE_LIVE_FALLBACK_MODEL?.trim() ||
   'gemini-2.5-flash-native-audio-latest';
+/** Warm General American female prebuilt Gemini voice */
+const DEFAULT_VOICE_NAME = process.env.VOICE_NAME?.trim() || 'Sulafat';
 
 export async function POST(request: Request): Promise<NextResponse> {
   const requestId =
@@ -66,6 +68,7 @@ export async function POST(request: Request): Promise<NextResponse> {
         token: token.name,
         model: PRIMARY_LIVE_MODEL,
         fallbackModel: FALLBACK_LIVE_MODEL,
+        voiceName: DEFAULT_VOICE_NAME,
         expiresAt: expireTime,
         requestId,
       },

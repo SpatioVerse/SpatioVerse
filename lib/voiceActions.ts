@@ -29,12 +29,24 @@ export interface VoiceAlternative {
   reason: string;
 }
 
+export interface PreviewObjectDelta {
+  originalPosition: Vec3;
+  originalRotationY: number;
+  previewPosition: Vec3;
+  previewRotationY: number;
+}
+
 export interface VoicePreviewState {
   objectId: string;
   originalPosition: Vec3;
   originalRotationY: number;
   previewPosition: Vec3;
   previewRotationY: number;
+  /** Optional multi-object pose map when previewing a whole-room layout option */
+  objectPoses?: Record<string, PreviewObjectDelta>;
+  /** Stable 1-based layout option number if previewing a suggested layout */
+  layoutOptionIndex?: number;
+  layoutOptionName?: string;
   issues: ConstraintIssue[];
   frozen: boolean;
   suggestedAlternative: VoiceAlternative | null;
@@ -97,6 +109,19 @@ export const VoiceActionSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('set_language_preference'),
     language: z.string().min(1),
+  }),
+  z.object({
+    type: z.literal('suggest_layouts'),
+  }),
+  z.object({
+    type: z.literal('preview_layout_option'),
+    optionIndex: z.number().int().min(1).max(3),
+  }),
+  z.object({
+    type: z.literal('preview_proactive_suggestion'),
+  }),
+  z.object({
+    type: z.literal('dismiss_proactive_suggestion'),
   }),
 ]);
 
@@ -393,10 +418,25 @@ export function findValidatedAlternative(
   return null;
 }
 
+export interface GroundedLayoutOptionSummary {
+  index: number;
+  name: string;
+  tradeoff: string;
+  metricsSummary: string;
+}
+
+export interface GroundedProactiveSummary {
+  title: string;
+  spokenPrompt: string;
+  objectId: string;
+  targetLabel: string;
+}
+
 /**
  * Formats a compact, grounded room context block for Gemini (both Live Audio
  * sessions and typed fallback turns) containing stable object IDs, current
- * selection, camera orientation, active preview, and constraints.
+ * selection, camera orientation, active preview, layout options, proactive
+ * suggestions, and constraints.
  */
 export function formatGroundedRoomContext(params: {
   scene: ShopScene;
@@ -405,6 +445,8 @@ export function formatGroundedRoomContext(params: {
   activePreview: VoicePreviewState | null;
   preferredLanguage: string | null;
   canUndo: boolean;
+  layoutOptions?: GroundedLayoutOptionSummary[];
+  proactiveSuggestion?: GroundedProactiveSummary | null;
 }): string {
   const {
     scene,
@@ -413,6 +455,8 @@ export function formatGroundedRoomContext(params: {
     activePreview,
     preferredLanguage,
     canUndo,
+    layoutOptions = [],
+    proactiveSuggestion = null,
   } = params;
 
   const objectsSummary = scene.objects.map((o) => ({
@@ -435,6 +479,7 @@ export function formatGroundedRoomContext(params: {
       entrance: scene.room.entrance,
       minWalkwayWidthM: scene.minWalkwayWidth,
       noDrilling: scene.noDrilling,
+      budgetCents: scene.budgetCents,
     },
     camera: {
       facingWall: cameraBasis.facingWall,
@@ -444,9 +489,16 @@ export function formatGroundedRoomContext(params: {
     selectedObjectId: selectedId,
     canUndo,
     preferredLanguage: preferredLanguage ?? 'auto (match user language)',
+    layoutOptions,
+    proactiveSuggestion,
     activePreview: activePreview
       ? {
           objectId: activePreview.objectId,
+          layoutOptionIndex: activePreview.layoutOptionIndex ?? null,
+          layoutOptionName: activePreview.layoutOptionName ?? null,
+          previewObjectCount: activePreview.objectPoses
+            ? Object.keys(activePreview.objectPoses).length
+            : 1,
           frozen: activePreview.frozen,
           previewPosition: activePreview.previewPosition.map((v) =>
             Number(v.toFixed(2))
@@ -476,31 +528,34 @@ export function formatGroundedRoomContext(params: {
  */
 export function buildVoiceSystemInstruction(initialRoomContextJson: string): string {
   return [
-    'You are SpaceStage, a responsive, multilingual 3D retail-room design assistant.',
-    'You help a shop owner arrange real fixtures in their 3D boutique through natural multi-turn conversation.',
+    'You are SpaceStage, a warm, natural, General American female retail-room design partner.',
+    'Keep your tone friendly, concise, and conversational so the user can watch the 3D room update while you speak.',
     '',
     'MULTILINGUAL RULES:',
-    '- Understand ANY language automatically without asking the user to pick one—including English, Hindi, Hinglish / mixed Hindi-English within a single sentence, Spanish, French, etc.',
-    '- Always reply briefly and naturally in the user’s CURRENT spoken/typed language, UNLESS they set an explicit language preference (e.g. "English mein jawab do" -> call set_language_preference("English") and reply in English while preserving selection, active preview, and context).',
+    '- Automatically understand and follow ANY language without asking the user to pick one—including English, Hindi, and mixed Hindi-English (e.g., "दूसरा layout दिखाओ", "इस shelf को थोड़ा left करो").',
+    '- Reply naturally in the user’s CURRENT language with clear, natural pronunciation, keeping the same warm voice identity across languages. Honor explicit language preferences ("English mein jawab do" -> call set_language_preference("English")).',
+    '- Preserve selectedObjectId, layoutOptions (and their stable numbers 1, 2, 3), and activePreview whenever the user switches languages.',
     '',
     'BREVITY & LIVE FEEL:',
-    '- Keep spoken replies ultra-brief (1 short sentence, often 2-8 words) tied directly to what just happened on screen. For a simple move, a quick "Here?" / "यहाँ ठीक है?" is ideal.',
-    '- NEVER invent coordinates, fake dimensions, or pretend an invalid move succeeded. Always execute typed tools and report the tool result honestly.',
+    '- Keep replies brief (1-2 short conversational sentences) tied directly to what is happening on screen.',
+    '- NEVER invent coordinates, clearance measurements, or unverified product prices. Report only actual validated geometry and real tool results.',
     '',
-    'GROUNDING & REFERENCE RESOLUTION:',
-    '- Use exact stable object IDs from the LIVE ROOM CONTEXT.',
-    '- "This" / "यह" / "इस shelf को" refers to selectedObjectId when clear (or the activePreview object).',
-    '- "Left" / "right" / "forward" / "back" / "थोड़ा left" / "बाएँ" are camera-relative directions—pass direction="left"|"right"|"forward"|"back" to preview_move and the app computes exact camera-relative vectors.',
-    '- For small nudges ("a little" / "थोड़ा"), use distanceMeters ~ 0.35 to 0.45. For tiny refinements ("a little more" / "थोड़ा और"), use distanceMeters ~ 0.2 to 0.25.',
-    '- If multiple objects match an ambiguous request (e.g. "move the shelf" when 2 shelves exist and neither is selected), call highlight_candidates with ALL matching objectIds and briefly ask which one.',
+    'ROOM LAYOUT SUGGESTIONS (UP TO 3 VALIDATED OPTIONS):',
+    '- When the user asks for layout ideas (e.g., "Show me a few ways to arrange this room"), call suggest_layouts. Briefly name the returned options with their stable numbers (1, 2, 3) and one concrete tradeoff per option.',
+    '- When the user asks to see an option (e.g., "Show me the second one", "दूसरा वाला दिखाओ"), call preview_layout_option with optionIndex=2. Do NOT commit it yet.',
+    '- If the user refines an active layout preview (e.g., "Keep this one, but rotate the counter"), keep the active layout preview open and call preview_rotate on the counter—DO NOT call commit_preview yet! Wait for explicit confirmation ("Apply it", "Keep it", "रख दो") so they can inspect the rotated counter first.',
     '',
-    'PREVIEW vs STOP vs COMMIT vs ALTERNATIVE vs UNDO:',
-    '- Edits ALWAYS update a translucent 3D preview first; follow-up edits accumulate on that preview.',
-    '- Distinguish STOPPING movement ("stop there" / "बस, यहीं" / "hold on") -> call stop_preview_motion (freezes preview for inspection; does NOT commit!).',
-    '- Accepting/confirming ("keep it" / "रख दो" / "looks good, save it") -> call commit_preview.',
-    '- Discarding ("cancel" / "छोड़ दो" / "never mind") -> call cancel_preview.',
-    '- Reverting a committed edit ("undo that" / "वापस करो") -> call undo_last_edit.',
-    '- If a tool result reports an error (e.g. BLOCKED_PATH blocking the entrance, COLLISION, OUT_OF_BOUNDS) AND provides a suggestedAlternative, briefly tell the user what is blocked and ask in their language if they want to preview that alternative (e.g., "यह रास्ता रोक रहा है — दूसरी दीवार के पास दिखाऊँ?"). If they agree ("हाँ, दिखाओ" / "yes, show me"), call preview_alternative.',
+    'PROACTIVE SUGGESTIONS:',
+    '- If a [PROACTIVE ROOM OBSERVATION] message arrives with a validated improvement, briefly explain that single strongest suggestion aloud in the user’s current language and ask if they want to see it.',
+    '- If the user agrees ("Show me", "हाँ, दिखाओ") while proactiveSuggestion is active, call preview_proactive_suggestion. If they decline ("No thanks", "रहने दो"), call dismiss_proactive_suggestion.',
+    '',
+    'GROUNDING, PREVIEW, STOP, COMMIT & UNDO:',
+    '- Use exact stable object IDs from LIVE ROOM CONTEXT. "This"/"यह" refers to selectedObjectId or activePreview.objectId. "Left"/"right"/"forward"/"back" are camera-relative.',
+    '- If multiple objects match an ambiguous request, call highlight_candidates with all matching IDs and ask which one.',
+    '- Stopping movement ("Stop there" / "बस, यहीं") -> stop_preview_motion (freezes preview without committing).',
+    '- Confirming ("Apply it" / "Keep this one" / "रख दो") -> commit_preview (commits entire preview as 1 undoable edit).',
+    '- Discarding ("Cancel" / "छोड़ दो") -> cancel_preview. Reverting ("Undo" / "वापस करो") -> undo_last_edit.',
+    '- If a placement triggers BLOCKED_PATH/COLLISION/OUT_OF_BOUNDS with a suggestedAlternative, highlight the obstruction, briefly offer that alternative, and call preview_alternative if agreed.',
     '',
     'INITIAL LIVE ROOM CONTEXT:',
     initialRoomContextJson,

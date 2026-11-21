@@ -508,13 +508,46 @@ export function SpaceCanvas({ validator, onWalkerPose }: SpaceCanvasProps) {
     [voiceHighlightIds]
   );
 
-  const previewTargetObject = useMemo(
-    () =>
-      voicePreview
-        ? scene.objects.find((o) => o.id === voicePreview.objectId) ?? null
-        : null,
-    [scene.objects, voicePreview]
-  );
+  const previewEntries = useMemo(() => {
+    if (!voicePreview) return [];
+    if (voicePreview.objectPoses) {
+      const entries: Array<{
+        object: SceneObjectType;
+        preview: VoicePreviewState;
+      }> = [];
+      for (const [objId, delta] of Object.entries(voicePreview.objectPoses)) {
+        const obj = scene.objects.find((o) => o.id === objId);
+        if (!obj) continue;
+        entries.push({
+          object: obj,
+          preview: {
+            ...voicePreview,
+            objectId: objId,
+            originalPosition: delta.originalPosition,
+            originalRotationY: delta.originalRotationY,
+            previewPosition: delta.previewPosition,
+            previewRotationY: delta.previewRotationY,
+            suggestedAlternative:
+              objId === voicePreview.objectId
+                ? voicePreview.suggestedAlternative
+                : null,
+          },
+        });
+      }
+      return entries;
+    }
+
+    const single = scene.objects.find((o) => o.id === voicePreview.objectId);
+    return single ? [{ object: single, preview: voicePreview }] : [];
+  }, [scene.objects, voicePreview]);
+
+  const previewOriginSet = useMemo(() => {
+    const ids = new Set<string>();
+    for (const entry of previewEntries) {
+      ids.add(entry.object.id);
+    }
+    return ids;
+  }, [previewEntries]);
 
   const isWalkthrough = cameraMode === 'walkthrough';
   const contactShadowScale = Math.max(scene.room.width, scene.room.depth) * 1.5;
@@ -561,7 +594,7 @@ export function SpaceCanvas({ validator, onWalkerPose }: SpaceCanvasProps) {
               object={obj}
               isSelected={selectedId === obj.id && !isWalkthrough}
               isVoiceHighlighted={voiceHighlightSet.has(obj.id) && !isWalkthrough}
-              isPreviewOrigin={voicePreview?.objectId === obj.id && !isWalkthrough}
+              isPreviewOrigin={previewOriginSet.has(obj.id) && !isWalkthrough}
               hasError={errorIds.has(obj.id)}
               hasWarning={warningIds.has(obj.id)}
               interactive={!isWalkthrough}
@@ -571,12 +604,13 @@ export function SpaceCanvas({ validator, onWalkerPose }: SpaceCanvasProps) {
             />
           ))}
 
-          {voicePreview && previewTargetObject && (
+          {previewEntries.map((entry) => (
             <VoicePreviewGhost
-              object={previewTargetObject}
-              preview={voicePreview}
+              key={`preview-${entry.object.id}`}
+              object={entry.object}
+              preview={entry.preview}
             />
-          )}
+          ))}
 
           <CameraBridgeSync />
 
