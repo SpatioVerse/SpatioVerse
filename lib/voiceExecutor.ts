@@ -581,6 +581,29 @@ export function executeVoiceAction(
       };
     }
 
+    case 'remove_objects': {
+      const removeSet = new Set(action.objectIds);
+      const removed = store.scene.objects.filter((o) => removeSet.has(o.id));
+      if (removed.length === 0) {
+        return {
+          ok: false,
+          actionType: action.type,
+          summary: 'None of the specified items were found in the room.',
+        };
+      }
+      const remaining = store.scene.objects.filter((o) => !removeSet.has(o.id));
+      store.replaceSceneUndoable({
+        ...store.scene,
+        objects: remaining,
+      });
+      const names = removed.map((o) => o.label).join(' and ');
+      return {
+        ok: true,
+        actionType: action.type,
+        summary: `Removed ${names}. Every other item in the room stayed right where it was.`,
+      };
+    }
+
     case 'redesign_room_style': {
       return {
         ok: false,

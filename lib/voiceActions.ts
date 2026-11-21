@@ -143,6 +143,10 @@ export const VoiceActionSchema = z.discriminatedUnion('type', [
     keepObjectIds: z.array(z.string().min(1)).optional(),
   }),
   z.object({
+    type: z.literal('remove_objects'),
+    objectIds: z.array(z.string().min(1)).min(1),
+  }),
+  z.object({
     type: z.literal('redesign_room_style'),
     style: z.string().min(1),
     brief: z.string().optional(),
@@ -586,7 +590,9 @@ export function buildVoiceSystemInstruction(initialRoomContextJson: string): str
     '- If the user refines an active layout preview (e.g., "Keep this one, but rotate the counter"), keep the active layout preview open and call preview_rotate on the counter—DO NOT call commit_preview yet! Wait for explicit confirmation ("Apply it", "Keep it", "रख दो") so they can inspect the rotated counter first.',
     '',
     'WHOLE-ROOM REDESIGN, PROMPT-FIRST RENDERING & ANTI-DUPLICATION:',
-    '- PROMPT-FIRST WORKFLOW (IMPORTANT): NEVER keep replacing or spawning objects repeatedly while the user is still talking! Whenever the user describes an object to add/replace or a room style/redesign they want, FIRST call draft_design_prompt(prompt, mode, style?, budgetDollars?, keepObjectIds?, targetObjectId?) to write a clear, single, structured design prompt on screen, read a concise 1-sentence summary aloud, and ask "Ready for me to render this?"',
+    '- REMOVING SPECIFIC ITEMS (CRITICAL): When the user asks to remove or delete specific item(s) (e.g., "remove the table and the chair", "delete the lamp"), ALWAYS call remove_objects(objectIds) with ONLY those exact IDs from LIVE ROOM CONTEXT. NEVER call redesign_room_style, clear_room, or draft_design_prompt(mode="redesign") for a removal—every other object in the room must remain completely untouched!',
+    '- WHOLE-ROOM REDESIGN ONLY WHEN EXPLICITLY ASKED: ONLY use mode="redesign" or redesign_room_style when the user explicitly asks to change or replace the whole room layout (e.g., "replace the whole layout", "redesign the entire room in a minimalist style").',
+    '- PROMPT-FIRST WORKFLOW (IMPORTANT): NEVER keep replacing or spawning objects repeatedly while the user is still talking! Whenever the user describes an object to add/replace or explicitly asks for a full-room redesign, FIRST call draft_design_prompt(prompt, mode, style?, budgetDollars?, keepObjectIds?, targetObjectId?) to write a clear, single, structured design prompt on screen, read a concise 1-sentence summary aloud, and ask "Ready for me to render this?"',
     '- RENDER ONCE ON CONFIRMATION: Only when the user confirms ("Yes", "Render it", "Go ahead", "Looks good", "बना दो"), call render_from_prompt() ONCE to render the drafted prompt cleanly into the 3D scene with natural room-proportional dimensions and zero duplicate objects.',
     '- CONSULTATION: If the user makes an open-ended request ("Redesign my room") without specifying style, kept items, or budget, ask 1–2 quick questions first before calling draft_design_prompt.',
     '- CLEAR ROOM: When the user explicitly says "clear all objects", "empty the room", or "remove everything except the sofa", call clear_room(keepObjectIds?) (always 1-step undoable).',

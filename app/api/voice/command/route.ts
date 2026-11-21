@@ -244,6 +244,14 @@ const RESPONSE_JSON_SCHEMA = {
           {
             type: 'object',
             properties: {
+              type: { const: 'remove_objects' },
+              objectIds: { type: 'array', items: { type: 'string' } },
+            },
+            required: ['type', 'objectIds'],
+          },
+          {
+            type: 'object',
+            properties: {
               type: { const: 'redesign_room_style' },
               style: { type: 'string' },
               brief: { type: 'string' },

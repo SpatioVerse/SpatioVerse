@@ -301,6 +301,22 @@ const LIVE_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
     },
   },
   {
+    name: 'remove_objects',
+    description:
+      'Remove one or more specific furniture objects from the 3D room by exact ID WITHOUT changing, moving, or redesigning any other object in the room. Always 1-step undoable.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        objectIds: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+          description: 'Exact object IDs from LIVE ROOM CONTEXT to remove.',
+        },
+      },
+      required: ['objectIds'],
+    },
+  },
+  {
     name: 'redesign_room_style',
     description:
       'Replace the whole room layout with a fresh, constraint-validated 3D design tailored to the user’s style (e.g. minimalist, decorative, cozy, luxury) and budget, optionally keeping specific items and furnishing with live Shopify products.',
