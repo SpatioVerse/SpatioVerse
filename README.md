@@ -7,10 +7,19 @@
 [![Gemini 4](https://img.shields.io/badge/Gemini_4-Neon_%2B_Hydrogen_%2B_Live-4285F4?logo=googlegemini)](https://ai.google.dev/)
 [![Shopify Shop MCP](https://img.shields.io/badge/Shopify-Shop_MCP_Live-95BF47?logo=shopify)](https://mcp.shop.com/)
 [![Tests](https://img.shields.io/badge/Vitest-40%2F40_Passing-10b981)](./tests)
+[![Watch Demo](https://img.shields.io/badge/YouTube-Watch_Walkthrough-FF0000?logo=youtube&logoColor=white)](https://youtu.be/JetuxNmiOb0)
 
 SpatioVerse turns room photos, walkthrough videos, or YouTube clips into an interactive, constraint-checked 3D retail and interior studio. Keep owned furniture at **`$0`**, explore in **360° First-Person Walkthrough**, rearrange rooms with **live multilingual voice (`Sulafat`)** or quick AI mockups, source **real live Shopify products** visually matched to **46 PBR 3D `.glb` assets**, and generate **buyer-approved merchant checkout carts**.
 
 ![SpatioVerse 3D Retail & Interior Studio](docs/screenshots/01-hero-3d-studio.png)
+
+## Demo Walkthrough Video
+
+Watch the full end-to-end live walkthrough on YouTube (3D orbit & plan views, 360° first-person walkthrough with minimap, multi-layout advisor, Gemini 4 AI fixture swap, live Shopify photo-to-3D matching, merchant cart checkout, and multimodal room upload):
+
+[![Watch the SpatioVerse Walkthrough on YouTube](https://img.youtube.com/vi/JetuxNmiOb0/hqdefault.jpg)](https://youtu.be/JetuxNmiOb0)
+
+**[▶ Watch Full Walkthrough Video on YouTube](https://youtu.be/JetuxNmiOb0)**
 
 ---
 
