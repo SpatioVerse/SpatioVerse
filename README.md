@@ -2,13 +2,71 @@
 
 **Multimodal 3D Room & Retail Layout Studio powered by Gemini 4, Decisions API, Gemini Live Audio, and Shopify Shop MCP.**
 
-SpatioVerse lets merchants and designers scan an existing room via video, photo, or YouTube clip, preserve owned furniture at `$0` spend, explore and edit a constraint-checked 3D space interactively or by live voice, visually match real Shopify products onto 3D PBR assets, and generate buyer-controlled merchant checkout links.
+[![Next.js 16](https://img.shields.io/badge/Next.js-16.4-black?logo=next.js)](https://nextjs.org/)
+[![React Three Fiber](https://img.shields.io/badge/Three.js-R3F_3D_Studio-049ef4?logo=threedotjs)](https://docs.pmnd.rs/react-three-fiber)
+[![Gemini 4](https://img.shields.io/badge/Gemini_4-Neon_%2B_Hydrogen_%2B_Live-4285F4?logo=googlegemini)](https://ai.google.dev/)
+[![Shopify Shop MCP](https://img.shields.io/badge/Shopify-Shop_MCP_Live-95BF47?logo=shopify)](https://mcp.shop.com/)
+[![Tests](https://img.shields.io/badge/Vitest-40%2F40_Passing-10b981)](./tests)
+
+SpatioVerse turns room photos, walkthrough videos, or YouTube clips into an interactive, constraint-checked 3D retail and interior studio. Keep owned furniture at **`$0`**, explore in **360° First-Person Walkthrough**, rearrange rooms with **live multilingual voice (`Sulafat`)** or quick AI mockups, source **real live Shopify products** visually matched to **46 PBR 3D `.glb` assets**, and generate **buyer-approved merchant checkout carts**.
+
+![SpatioVerse 3D Retail & Interior Studio](docs/screenshots/01-hero-3d-studio.png)
+
+---
+
+## Visual Feature Tour
+
+### 1. Interactive 3D Studio, Floor Grid & Architectural Viewpoints
+Switch seamlessly between **Flagship 24×18 ft** and **Compact 12×10 ft** presets, toggle **3D / Plan / Entry** camera viewpoints, overlay the **1-ft architectural floor grid**, and inspect exact dimensions, coordinates, and live constraint status (`Valid` / `OUT_OF_BOUNDS` / `COLLISION` / `BLOCKED_PATH`).
+
+| Architectural Top-Down Plan & Grid | First-Person 360° Walkthrough + Live Minimap |
+| --- | --- |
+| ![Plan View & Inspector](docs/screenshots/02-plan-grid-view.png) | ![360 Walkthrough](docs/screenshots/03-walkthrough-360.png) |
+
+- **Orbit Editor:** Click to select, drag on the floor plane with 2 cm snapping, rotate 90°, lock in place, or remove any fixture.
+- **360° Walk Through:** Navigate inside your staged space at eye level (`WASD` / arrow keys + mouse look + collision sliding) with a live 2D mini-floorplan and compass HUD.
+
+---
+
+### 2. Live Multilingual Voice Editor & Multi-Layout Room Advisor
+Powered by **Gemini Live Audio (`Sulafat` voice)** with a full typed multilingual fallback (English, Hindi, Hinglish, and more):
+
+| Multi-Layout Room Advisor & Voice Panel | AI Quick Mockup & Inspector |
+| --- | --- |
+| ![Voice & Multi-Layout Advisor](docs/screenshots/04-voice-layout-advisor.png) | ![AI Swap & Inspector](docs/screenshots/05-ai-swap-and-inspector.png) |
+
+- **Validated Multi-Layout Suggestions:** Click the layout icon or ask *"Show me a few ways to arrange this room"* to generate up to 3 validated, genuinely distinct room layouts (`Wider entrance`, `More display space`, `Reuse existing furniture`) with live mini-floorplans and translucent 3D previews.
+- **Precision Voice & Prompt Editing:** Say *"Move the counter slightly left"*, *"Rotate the rack sideways"*, *"Undo"*, or use the bottom **Swap / + Add** bar (`POST /api/replace`) to instantly place or swap 3D furniture mockups.
+- **Consultative Redesign:** Ask *"Redesign my room minimalist under \$800"* to combine live in-budget Shopify sourcing with constraint-validated layout planning.
+
+---
+
+### 3. Live Shopify Catalog, Vision-to-3D Matching & Dedicated Cart Checkout
+Dedicated **`Inspect | Shop | Cart`** tabs separate browsing, staging, and purchasing cleanly:
+
+| Live Shopify Catalog & Photo-to-3D Match | Dedicated Cart & Real Merchant Checkout |
+| --- | --- |
+| ![Shopify Live Catalog](docs/screenshots/06-shopify-live-catalog.png) | ![Cart & Merchant Checkout](docs/screenshots/07-lock-to-cart-checkout.png) |
+
+- **Live Shopify Shop MCP Search (`GET /api/products`):** Search real merchants, live prices, stock status, and product variants directly from `https://mcp.shop.com/`.
+- **Atomic Photo-to-3D Matching (`POST /api/match-model`):** Clicking **`+ Add`** or **`Replace in 3D scene`** uses `gemini-decision-1` + `gemini-4-hydrogen` Vision to inspect the real product photo, select the closest of **46 CC0 PBR `.glb` models** (or bespoke architectural lamps), sample its finish color, and normalize proportions to the room.
+- **Truthful Cart & Checkout (`POST /api/cart`):** Owned items stay **`$0.00`**. Locking or adding Shopify items populates the dedicated **`Cart`** tab with per-item controls, live subtotal, and real per-merchant checkout links (`Open <Seller> cart →`)—never fabricated prices or unauthorized orders.
+
+---
+
+### 4. Multimodal Space Capture & 1-Click Sample Retail Rooms
+Upload a storefront photo or walkthrough clip, record directly from a live camera, paste a YouTube walkthrough link, or test instantly with **3 built-in real retail room photos** (`public/samples/`):
+
+![Scan or Upload Retail Space Modal](docs/screenshots/08-scan-upload-samples.png)
+
+- **`POST /api/analyze` (`gemini-4-neon`):** Extracts visible owned fixtures, material/mounting cues, and explicit scale-uncertainty warnings from images, videos (inline ≤14 MB or Gemini Files API), or YouTube URLs.
+- **`POST /api/plan` (`gemini-4-hydrogen`):** Plans a constraint-validated 3D layout around your confirmed room dimensions (`width × depth × height`), entrance wall, budget, and `noDrilling` rule—with an automatic 1-pass deterministic repair loop if any constraint is violated.
 
 ---
 
 ## Architecture & Gemini Model Stack
 
-SpatioVerse separates multimodal perception, structured spatial planning, calibrated model selection, real-time voice interaction, deterministic geometry validation, and live commerce into auditable services communicating through a single Zod-validated `ShopScene` contract (`lib/schema.ts`).
+SpatioVerse separates multimodal perception, structured spatial planning, calibrated 3D asset matching, real-time voice interaction, deterministic geometry validation, and live commerce through a single Zod-validated `ShopScene` contract (`lib/schema.ts`).
 
 ```mermaid
 flowchart LR
@@ -16,56 +74,24 @@ flowchart LR
   Analyze --> Plan["POST /api/plan\ngemini-4-hydrogen"]
   Shop["GET /api/products\nShopify Shop MCP"] --> Plan
   Plan --> Validator["Deterministic Validator\nlib/constraints.ts\n(SAT OBB, Walkway, Budget)"]
-  Validator --> Studio["3D Studio (R3F + Zustand)\n46 PBR GLB Presets\nOrbit & Walkthrough"]
+  Validator --> Studio["3D Studio (R3F + Zustand)\n46 PBR GLB Presets\nOrbit & 360° Walkthrough"]
   Shop --> Match["POST /api/match-model\ngemini-decision-1 +\ngemini-4-hydrogen Vision"]
   Match --> Studio
   Voice["Live Multilingual Voice\nGemini Live Audio (Sulafat)"] --> Studio
   Voice --> Shop
   Voice --> Plan
   Studio --> Cart["POST /api/cart\nShopify Shop MCP"]
-  Cart --> Checkout["Merchant Checkout URL"]
+  Cart --> Checkout["Official Merchant Checkout URL"]
 ```
 
 | Layer | Model / Service | Endpoint | Responsibility |
 | --- | --- | --- | --- |
-| **Multimodal Space Intake** | `gemini-4-neon` | `POST /api/analyze` | Analyzes uploaded `JPG`/`PNG`/`WebP`/`MP4`/`MOV`/`WebM` media (inline ≤14 MB or Gemini Files API) or YouTube URLs to extract existing fixtures and initial 3D spatial layout cues. |
-| **Layout Planning & Swap Engine** | `gemini-4-hydrogen` | `POST /api/plan`, `POST /api/replace` | Generates constraint-checked `ShopScene` layouts (with at most 1 repair pass), executes text/voice add & replace commands, and powers full-room style/budget redesigns. |
-| **Product Image → 3D Asset Matcher** | `gemini-decision-1` + `gemini-4-hydrogen` Vision | `POST /api/match-model` | Uses `v1beta/decisions` (`gemini-decision-1`) for calibrated category routing, then `gemini-4-hydrogen` Vision to inspect the actual Shopify product photo, pick the closest of 46 PBR `.glb` presets, and sample dominant color/albedo. |
-| **Live Multilingual Voice Partner** | `gemini-3.1-flash-live-preview` (`Sulafat`) | `POST /api/voice/token`, `POST /api/voice/command` | Real-time bidirectional voice (English, Hindi, Hinglish, and other languages) with translucent 3D edit previews, multi-layout suggestions, consultative redesign, Shopify browsing, and checkout handoff. |
-| **Deterministic Constraint Engine** | Pure TypeScript (`lib/constraints.ts`) | Client + Server | Exact 2D Separating Axis Theorem (SAT) rotated-OBB collision checks, room bounds, 3 ft (`0.9144 m`) doorway & BFS walkway clearance, `noDrilling` enforcement, and integer-cent budget validation. |
+| **Multimodal Space Intake** | `gemini-4-neon` | `POST /api/analyze` | Analyzes uploaded `JPG`/`PNG`/`WebP`/`MP4`/`MOV`/`WebM` media (inline ≤14 MB or Gemini Files API) or YouTube URLs to extract existing fixtures and spatial cues. |
+| **Layout Planning & Swap Engine** | `gemini-4-hydrogen` | `POST /api/plan`, `POST /api/replace` | Generates constraint-checked `ShopScene` layouts (with max-1 repair pass), executes text/voice add & replace commands, and powers full-room style/budget redesigns. |
+| **Product Image → 3D Asset Matcher** | `gemini-decision-1` + `gemini-4-hydrogen` Vision | `POST /api/match-model` | Uses `v1beta/decisions` (`gemini-decision-1`) for calibrated category routing, then `gemini-4-hydrogen` Vision to match the product photo to 46 PBR `.glb` presets and sample color/albedo. |
+| **Live Multilingual Voice Partner** | `gemini-3.1-flash-live-preview` (`Sulafat`) | `POST /api/voice/token`, `POST /api/voice/command` | Real-time bidirectional voice (English, Hindi, Hinglish, and more) with translucent 3D previews, multi-layout suggestions, Shopify browsing, cart management, and order receipts. |
+| **Deterministic Constraint Engine** | Pure TypeScript (`lib/constraints.ts`) | Client + Server | Exact 2D Separating Axis Theorem (SAT) rotated-OBB collisions, room bounds, 3 ft (`0.9144 m`) doorway & BFS walkway clearance, `noDrilling`, and integer-cent budget checks. |
 | **Live Commerce** | Shopify Shop MCP (`https://mcp.shop.com/`) | `GET /api/products`, `POST /api/cart` | Live catalog search, variant inspection, and per-merchant cart creation (`MCP-Protocol-Version: 2026-07-28`). |
-
----
-
-## Feature Walkthrough
-
-### 1. Multimodal Space Capture & Room Setup
-- Open **Scan Space** (`MediaIntakeModal`) or the **Setup Wizard** (`SetupWizard`) to upload a room photo/video, record live camera clips, or paste a YouTube walkthrough URL.
-- Confirm room dimensions (`width × depth × height` in feet), entrance wall, new-purchase budget, and landlord rules (`noDrilling`).
-- `POST /api/analyze` (`gemini-4-neon`) detects existing fixtures and emits explicit uncalibrated-dimension warnings until confirmed; `POST /api/plan` (`gemini-4-hydrogen`) builds and validates the 3D scene.
-
-### 2. Interactive 3D Studio & 46-Asset PBR Catalog
-- Switch between **Orbit** and **First-Person Walkthrough** (`WASD` / arrow keys with live mini-floorplan HUD).
-- Select, drag, rotate, lock, or remove any fixture with real-time deterministic constraint feedback (`OUT_OF_BOUNDS`, `COLLISION`, `BLOCKED_PATH`, `NO_DRILLING`, `OVER_BUDGET`, `UNVERIFIED_DIMENSIONS`).
-- Renders **46 CC0 PBR `.glb` models** (`public/models/`) covering sofas, daybeds, armchairs, dining/office chairs, stools, benches, round & rectangular tables, desks, wardrobes, cabinets, dressers, nightstands, shelves, racks, beds, lamps, mirrors, and plants.
-
-### 3. Prompt Bar & Shopify Product Add / Replace
-- **Bottom Prompt Bar (`ReplaceObjectBar`):** Type or speak natural commands to swap a selected object or click **`+ Add`** to insert a new 3D item into an open floor spot.
-- **Shop Products Side Panel (`ProductPanel`):** Search live Shopify inventory, inspect variants and pricing, and click **`Replace in 3D scene`** or **`+ Add`** on any product card.
-- Every selected Shopify product triggers `POST /api/match-model` (`gemini-decision-1` + `gemini-4-hydrogen` Vision) to automatically hot-swap the 3D mesh and color tint to match the product's actual photograph.
-- Owned items always count as `$0` toward the new-purchase budget; only Shopify items count against `budgetCents`.
-
-### 4. Live Multilingual Voice Mode
-Click the voice control to start a live session (`Sulafat` voice) or use the typed multilingual command fallback:
-- **Precision Spatial Editing:** *"Move the sofa a bit to the left"*, *"Rotate the counter sideways"*, *"Stop there"*, *"Keep it"*, *"Cancel"*, *"Undo"*. Edits appear as translucent 3D previews before committing.
-- **Multi-Layout Previews & Proactive Advisor:** *"Show me a few ways to arrange this room"* generates up to 3 validated layouts (`1`, `2`, `3`) using existing furniture; *"Show me the second one"* previews it live.
-- **Whole-Room Clear & Consultative Style Redesign:**
-  - *"Clear all objects"* or *"Remove everything except the sofa"* (1-step undoable).
-  - *"Redesign my room"* prompts 1–2 quick design questions (style, kept items, budget), or speak directly: *"Give me a minimalist look under \$800"* / *"Make it decorative and cozy"*. Fetches live in-budget Shopify products and plans a fresh constraint-validated layout via `POST /api/plan`.
-- **Voice Shopify Browsing & Ordering:**
-  - *"Show me round walnut tables on Shopify"* opens the right-hand **Shop Products** side panel with numbered `#1`, `#2`, `#3` cards and reads out top real options.
-  - *"Add the first one"* or *"Replace the table with number 2"* places it in 3D with vision-matched geometry.
-  - *"Place an order for the first one"* or *"Checkout my cart"* calls `POST /api/cart` and opens the merchant checkout link card in the side panel for buyer-approved checkout.
 
 ---
 
@@ -97,7 +123,7 @@ GEMINI_API_KEY=your_gemini_api_key_here
 ```bash
 npm run dev
 ```
-Open `http://localhost:3000`. Two offline-ready demo scenes (`flagshipScene` and `compactDemoScene`) load immediately without requiring an initial upload.
+Open `http://localhost:3000`. Two offline-ready demo scenes (`Flagship 24×18` and `Compact 12×10`) plus 3 built-in sample room photos load immediately without requiring an external upload.
 
 ### 4. Production Build & Start
 ```bash
@@ -109,7 +135,7 @@ npm run start
 
 ## Verification & Testing
 
-Run type-checking, linting, and the automated Vitest suite (40 tests across spatial constraints, Gemini API contracts, and voice editing):
+Run TypeScript verification, ESLint, and the automated Vitest suite (**40/40 passing tests** across spatial constraints, Gemini API contracts, and voice editing):
 
 ```bash
 npx tsc --noEmit
@@ -117,12 +143,12 @@ npm run lint
 npm test
 ```
 
-| Test Suite | Coverage |
-| --- | --- |
-| `lib/constraints.test.ts` | Core deterministic geometry, SAT collisions, walkway BFS, budget & no-drilling checks |
-| `tests/constraints.test.ts` | 8 end-to-end small-store evaluation scenarios from `fixtures/eval-cases.json` |
-| `app/api/analyze/analyze.test.ts` | `/api/analyze` (inline, Files API, YouTube), `/api/plan` (1-pass repair), and `/api/replace` contracts |
-| `tests/voice-editing.test.ts` | Camera-relative moves, wall alignment, stale-epoch guards, layout previews, and undo stack |
+| Test Suite | Tests | Coverage |
+| --- | :---: | --- |
+| `lib/constraints.test.ts` | 10 | Core deterministic geometry, SAT rotated-OBB collisions, walkway BFS, budget & no-drilling checks |
+| `tests/constraints.test.ts` | 13 | End-to-end small-store evaluation scenarios from `fixtures/eval-cases.json` |
+| `app/api/analyze/analyze.test.ts` | 9 | `/api/analyze` (inline, Files API, YouTube), `/api/plan` (1-pass repair), and `/api/replace` contracts |
+| `tests/voice-editing.test.ts` | 8 | Camera-relative moves, wall alignment, stale-epoch guards, multi-layout previews, and undo stack |
 
 ---
 
@@ -145,39 +171,44 @@ npm test
 
 ```text
 app/
-  page.tsx                       # Main 3D Studio, inspector drawer, Shop panel & HUD
+  page.tsx                       # Main 3D Studio, Inspect | Shop | Cart drawer & HUD
   api/
     analyze/route.ts             # gemini-4-neon media analysis
     plan/route.ts                # gemini-4-hydrogen layout planner + repair
-    replace/route.ts             # gemini-4-hydrogen add/replace engine
+    replace/route.ts             # gemini-4-hydrogen add/replace/remove engine
     match-model/route.ts         # gemini-decision-1 + Vision GLB matcher
     voice/token/route.ts         # Ephemeral Gemini Live token endpoint
     voice/command/route.ts       # Typed multilingual voice fallback
     products/route.ts            # Shopify Shop MCP catalog search
     cart/route.ts                # Shopify Shop MCP per-merchant cart handoff
 components/
-  SpaceCanvas.tsx                # React Three Fiber canvas, lighting & controls
+  SpaceCanvas.tsx                # React Three Fiber canvas, lighting, camera & voice previews
   SceneObject.tsx                # 46-model GLB renderer, auto-axis alignment & color tinting
-  BoutiqueEnvironment.tsx        # Room shell, flooring, entrance & grid
-  FirstPersonRig.tsx             # Walkthrough camera controller
-  MediaIntakeModal.tsx           # Photo / video / camera / YouTube intake modal
+  BoutiqueEnvironment.tsx        # Room shell, flooring, entrance decal & floor grid
+  FirstPersonRig.tsx             # 360° Walkthrough camera controller with collision sliding
+  MediaIntakeModal.tsx           # Photo / video / camera / YouTube intake + 1-click samples
   SetupWizard.tsx                # 4-step guided room & inventory wizard
-  ProductPanel.tsx               # Live Shopify browser, + Add / Replace & checkout cards
+  ProductPanel.tsx               # Live Shopify browser, dedicated Cart tab & checkout cards
   ReplaceObjectBar.tsx           # Prompt & voice add/swap bar
-  VoiceRoomControl.tsx           # Live multilingual voice HUD & layout preview controls
+  VoiceRoomControl.tsx           # Live multilingual voice HUD & multi-layout preview controls
 lib/
   schema.ts                      # Canonical Zod & TypeScript ShopScene contract
-  constraints.ts                 # Deterministic SAT, walkway, budget & no-drilling validator
+  constraints.ts                 # Deterministic SAT, walkway BFS, budget & no-drilling validator
   gemini.ts                      # Server-side Gemini 4 & Decisions API orchestration
-  modelCatalog.ts                # 46 CC0 PBR GLB asset registry & color extraction
+  modelCatalog.ts                # 46 CC0 PBR GLB asset registry
+  roomProportions.ts             # Per-furniture realistic room-scale normalization & dedupe
   shopify.ts                     # Shopify Shop MCP JSON-RPC 2.0 client
   voiceActions.ts                # VoiceAction schemas & multilingual system prompt
   voiceExecutor.ts               # Deterministic + async voice tool executor
   voiceLiveClient.ts             # Gemini Live WebSocket audio & tool-call client
   layoutSuggestions.ts           # Multi-layout generator & proactive room advisor
 store/
-  useSceneStore.ts               # Zustand scene, undo stack, voice preview & shop state
-public/models/                   # 46 CC0 PBR .glb furniture assets
+  useSceneStore.ts               # Zustand scene, undo stack, voice preview & cart state
+public/
+  models/                        # 46 CC0 PBR .glb furniture assets
+  samples/                       # 3 ready-to-use real retail room photos for 1-click demos
+docs/
+  screenshots/                   # Curated HD screenshots embedded in this README
 fixtures/                        # Offline demo scenes & 8 constraint eval cases
 tests/                           # Vitest constraint & voice editing suites
 ```
@@ -187,7 +218,7 @@ tests/                           # Vitest constraint & voice editing suites
 ## Engineering Guardrails
 
 - **Spatial Honesty:** Uncalibrated single-camera video/photos cannot yield millimeter-exact dimensions; `/api/analyze` flags approximate measurements (`UNVERIFIED_DIMENSIONS`) until confirmed by the user.
-- **Deterministic Geometry:** Bounds, rotated-OBB collisions, walkway clearances, and budget totals are computed in local TypeScript (`lib/constraints.ts`)—never delegated to an LLM.
+- **Deterministic Geometry:** Bounds, rotated-OBB collisions, 3 ft walkway clearances, and budget totals are computed in local TypeScript (`lib/constraints.ts`)—never delegated to an LLM.
 - **Buyer-Controlled Commerce:** SpatioVerse never fabricates product IDs, prices, or checkout links, and never auto-completes checkout (`complete_checkout` is intentionally unused); all orders hand off to official merchant carts for buyer review.
 
 ---

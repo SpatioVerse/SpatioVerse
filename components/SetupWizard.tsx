@@ -63,6 +63,30 @@ const STYLE_OPTIONS = [
 
 const ENTRANCE_WALLS: RoomWall[] = ["north", "south", "east", "west"];
 
+const WIZARD_DEMO_SAMPLES = [
+  {
+    id: "skincare",
+    label: "Skincare Boutique",
+    subtitle: "Oak floor · shelves",
+    fileName: "skincare-boutique-room.jpg",
+    url: "/samples/skincare-boutique-room.jpg",
+  },
+  {
+    id: "concept",
+    label: "Concept Store",
+    subtitle: "Vitrine · racks · tree",
+    fileName: "modern-concept-boutique.jpg",
+    url: "/samples/modern-concept-boutique.jpg",
+  },
+  {
+    id: "empty",
+    label: "Empty Storefront",
+    subtitle: "Blank retail shell",
+    fileName: "empty-retail-storefront.jpg",
+    url: "/samples/empty-retail-storefront.jpg",
+  },
+] as const;
+
 export interface DetectedObservation {
   id: string;
   label: string;
@@ -471,6 +495,19 @@ export function SetupWizard({
   const handleStopRecording = () => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
       mediaRecorderRef.current.stop();
+    }
+  };
+
+  const handleSelectDemoSample = async (sample: (typeof WIZARD_DEMO_SAMPLES)[number]) => {
+    setCameraError(null);
+    try {
+      const res = await fetch(sample.url);
+      if (!res.ok) throw new Error("Could not load sample room photo.");
+      const blob = await res.blob();
+      const file = new File([blob], sample.fileName, { type: blob.type || "image/jpeg" });
+      setCapturedFile(file, "upload");
+    } catch {
+      setCameraError("Could not load sample room photo. Please choose a local image file instead.");
     }
   };
 
@@ -1129,6 +1166,41 @@ export function SetupWizard({
               onChange={handleFileUpload}
               className="mt-2 block w-full text-xs text-zinc-300 file:mr-3 file:rounded-lg file:border-0 file:bg-zinc-800 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-zinc-100 hover:file:bg-zinc-700"
             />
+            <div className="mt-3 border-t border-zinc-800 pt-3">
+              <div className="mb-2 text-[11px] font-medium text-zinc-400">
+                Or pick a sample retail space (1-click):
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                {WIZARD_DEMO_SAMPLES.map((sample) => (
+                  <button
+                    key={sample.id}
+                    type="button"
+                    data-testid={`wizard-sample-${sample.id}`}
+                    onClick={() => void handleSelectDemoSample(sample)}
+                    className={`overflow-hidden rounded-lg border text-left transition-colors ${
+                      mediaFile?.name === sample.fileName
+                        ? "border-amber-300 bg-amber-300/15"
+                        : "border-zinc-700/80 bg-zinc-900 hover:border-zinc-500"
+                    }`}
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={sample.url}
+                      alt={sample.label}
+                      className="h-14 w-full object-cover"
+                    />
+                    <div className="px-2 py-1">
+                      <div className="truncate text-[11px] font-semibold text-zinc-100">
+                        {sample.label}
+                      </div>
+                      <div className="truncate text-[10px] text-zinc-400">
+                        {sample.subtitle}
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
 
           {mediaFile && mediaPreviewUrl && (

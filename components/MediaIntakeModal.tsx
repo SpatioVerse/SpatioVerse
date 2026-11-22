@@ -43,6 +43,30 @@ import {
 type IntakeTab = 'upload' | 'camera' | 'youtube';
 type ApiEndpoint = '/api/analyze' | '/api/plan';
 
+const DEMO_ROOM_SAMPLES = [
+  {
+    id: 'skincare',
+    label: 'Skincare Boutique',
+    subtitle: 'Oak floor · shelves',
+    fileName: 'skincare-boutique-room.jpg',
+    url: '/samples/skincare-boutique-room.jpg',
+  },
+  {
+    id: 'concept',
+    label: 'Concept Store',
+    subtitle: 'Vitrine · racks · plant',
+    fileName: 'modern-concept-boutique.jpg',
+    url: '/samples/modern-concept-boutique.jpg',
+  },
+  {
+    id: 'empty',
+    label: 'Empty Storefront',
+    subtitle: 'Blank retail shell',
+    fileName: 'empty-retail-storefront.jpg',
+    url: '/samples/empty-retail-storefront.jpg',
+  },
+] as const;
+
 type ApiErrorDetail = {
   endpoint: ApiEndpoint;
   status?: number;
@@ -355,6 +379,7 @@ function MediaIntakeDialogContent({
     null
   );
   const [isDragOver, setIsDragOver] = useState(false);
+  const [loadingSampleId, setLoadingSampleId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Live Camera state
@@ -512,6 +537,28 @@ function MediaIntakeDialogContent({
     const file = event.dataTransfer.files?.[0];
     if (file) {
       handleSelectFile(file);
+    }
+  };
+
+  const handleSelectSampleRoom = async (sample: (typeof DEMO_ROOM_SAMPLES)[number]) => {
+    setLoadingSampleId(sample.id);
+    setStatusNotice(null);
+    setServerError(null);
+    try {
+      const res = await fetch(sample.url);
+      if (!res.ok) throw new Error('Failed to load sample room');
+      const blob = await res.blob();
+      const file = new File([blob], sample.fileName, {
+        type: blob.type || 'image/jpeg',
+      });
+      handleSelectFile(file);
+    } catch {
+      setStatusNotice({
+        tone: 'red',
+        message: 'Could not load sample room photo. You can still upload any local JPG or PNG.',
+      });
+    } finally {
+      setLoadingSampleId(null);
     }
   };
 
@@ -1288,6 +1335,60 @@ function MediaIntakeDialogContent({
                   </div>
                 </div>
               )}
+
+              {/* Ready-to-Use Demo Retail Room Photos */}
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-[11px] font-semibold text-zinc-300">
+                    Or load a demo room photo (1-click)
+                  </span>
+                  <span className="text-[10px] text-zinc-500">
+                    Real retail spaces for Gemini Vision
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {DEMO_ROOM_SAMPLES.map((sample) => {
+                    const isSelected = uploadedFile?.name === sample.fileName;
+                    const isLoading = loadingSampleId === sample.id;
+                    return (
+                      <button
+                        key={sample.id}
+                        type="button"
+                        data-testid={`sample-room-${sample.id}`}
+                        disabled={isLoading}
+                        onClick={() => void handleSelectSampleRoom(sample)}
+                        className={`group flex cursor-pointer flex-col overflow-hidden rounded-xl border text-left transition-all ${
+                          isSelected
+                            ? 'border-amber-300 bg-amber-300/12 ring-1 ring-amber-300/40'
+                            : 'border-white/10 bg-zinc-900/70 hover:border-white/25 hover:bg-zinc-900'
+                        }`}
+                      >
+                        <div className="relative h-16 w-full overflow-hidden bg-zinc-950">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={sample.url}
+                            alt={sample.label}
+                            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                          />
+                          {isLoading && (
+                            <div className="absolute inset-0 flex items-center justify-center bg-black/55">
+                              <Loader2 className="h-4 w-4 animate-spin text-amber-300" />
+                            </div>
+                          )}
+                        </div>
+                        <div className="px-2 py-1.5">
+                          <div className="truncate text-[11px] font-semibold text-zinc-100">
+                            {sample.label}
+                          </div>
+                          <div className="truncate text-[10px] text-zinc-400">
+                            {sample.subtitle}
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
           )}
 

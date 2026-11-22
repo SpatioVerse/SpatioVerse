@@ -42,6 +42,7 @@ test/*.MOV
 test/*.mov
 test/*.mp4
 test/*.webm
+public/demo/
 
 # vercel
 .vercel

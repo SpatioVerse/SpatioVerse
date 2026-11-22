@@ -546,6 +546,7 @@ export function VoiceRoomControl({ rightOffsetPx = 0 }: VoiceRoomControlProps = 
                     setErrorBanner(null);
                     setRoomReply('');
                     setUserHeard('');
+                    clearLayoutOptions();
                   }}
                   aria-label="Close voice panel"
                   className="flex h-6 w-6 cursor-pointer items-center justify-center rounded-lg text-zinc-400 hover:bg-white/10 hover:text-white"
