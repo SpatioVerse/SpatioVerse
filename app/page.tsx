@@ -531,6 +531,7 @@ export default function HomePage() {
     price: string;
   } | null>(null);
   const swapToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const matchSeqByObjectRef = useRef<Record<string, number>>({});
 
   useEffect(() => {
     return () => {
@@ -554,52 +555,71 @@ export default function HomePage() {
             scene.room,
             product.title
           );
-      updateObject(objectId, { ...patch, size: nextSize });
-      selectObject(objectId);
-      useSceneStore.getState().addToCart(objectId);
 
-      // Vision-based product photo -> closest 3D GLB + sampled color match
-      const { setVisionModelOverride } = useSceneStore.getState();
-      setVisionModelOverride(objectId, null);
+      const matchSeq = (matchSeqByObjectRef.current[objectId] ?? 0) + 1;
+      matchSeqByObjectRef.current[objectId] = matchSeq;
+
+      setSwapToast({
+        objectId,
+        title: `Matching 3D model: ${product.title}…`,
+        seller: product.seller,
+        price: formatCents(product.priceCents, product.currency),
+      });
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 6500);
+
       void fetch('/api/match-model', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           title: product.title,
           imageUrl: product.imageUrl,
         }),
       })
         .then((res) => (res.ok ? res.json() : null))
+        .catch(() => null)
+        .finally(() => clearTimeout(timeoutId))
         .then((match) => {
-          if (!match || typeof match.glbKey !== 'string') return;
-          setVisionModelOverride(objectId, {
-            glbKey: match.glbKey,
-            dominantColorHex: match.dominantColorHex,
-            overrideAlbedo: Boolean(match.overrideAlbedo),
-          });
-          if (!verifiedSize && Array.isArray(match.estimatedSize) && match.estimatedSize.length === 3) {
-            updateObject(objectId, {
-              kind: match.inferredKind ?? patch.kind,
-              size: match.estimatedSize as Vec3,
-            });
-          }
-        })
-        .catch(() => {
-          // Graceful fallback: keep deterministic catalog match
-        });
+          if (matchSeqByObjectRef.current[objectId] !== matchSeq) return;
 
-      setSwapToast({
-        objectId,
-        title: product.title,
-        seller: product.seller,
-        price: formatCents(product.priceCents, product.currency),
-      });
-      if (swapToastTimerRef.current) {
-        clearTimeout(swapToastTimerRef.current);
-      }
-      swapToastTimerRef.current = setTimeout(() => {
-        setSwapToast(null);
-      }, 4200);
+          const { setVisionModelOverride, addToCart } = useSceneStore.getState();
+          const isModernFloorLamp =
+            match &&
+            (match.glbKey === 'lamp' || match.glbKey === 'lampTable') &&
+            /\b(floor\s+lamp|standing\s+lamp|mid[- ]?century|modern|led|globe|arched|column|torchiere|clayton)\b/i.test(
+              product.title
+            );
+
+          if (match && typeof match.glbKey === 'string' && !isModernFloorLamp) {
+            setVisionModelOverride(objectId, {
+              glbKey: match.glbKey,
+              dominantColorHex: match.dominantColorHex,
+              overrideAlbedo: Boolean(match.overrideAlbedo),
+            });
+          } else {
+            setVisionModelOverride(objectId, null);
+          }
+
+          // Single atomic render: object changes ONCE and never morphs again later
+          updateObject(objectId, { ...patch, size: nextSize });
+          selectObject(objectId);
+          addToCart(objectId);
+
+          setSwapToast({
+            objectId,
+            title: product.title,
+            seller: product.seller,
+            price: formatCents(product.priceCents, product.currency),
+          });
+          if (swapToastTimerRef.current) {
+            clearTimeout(swapToastTimerRef.current);
+          }
+          swapToastTimerRef.current = setTimeout(() => {
+            setSwapToast(null);
+          }, 4200);
+        });
     },
     [scene.objects, scene.room, updateObject, selectObject]
   );
@@ -691,61 +711,76 @@ export default function HomePage() {
         dimensionsVerified: Boolean(verifiedSize),
       };
 
-      setScene({
-        ...scene,
-        objects: deduplicateSceneObjects([...scene.objects, newObj]),
-      });
-      selectObject(newObj.id);
-      useSceneStore.getState().addToCart(newObj.id);
+      const matchSeq = (matchSeqByObjectRef.current[newObj.id] ?? 0) + 1;
+      matchSeqByObjectRef.current[newObj.id] = matchSeq;
 
-      // Vision + Decisions API (gemini-decision-1 + gemini-4-hydrogen) photo -> closest 3D GLB match
-      const { setVisionModelOverride } = useSceneStore.getState();
-      setVisionModelOverride(newObj.id, null);
+      setSwapToast({
+        objectId: newObj.id,
+        title: `Matching 3D model: ${product.title}…`,
+        seller: product.seller,
+        price: formatCents(product.priceCents, product.currency),
+      });
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 6500);
+
       void fetch('/api/match-model', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           title: product.title,
           imageUrl: product.imageUrl,
         }),
       })
         .then((res) => (res.ok ? res.json() : null))
+        .catch(() => null)
+        .finally(() => clearTimeout(timeoutId))
         .then((match) => {
-          if (!match || typeof match.glbKey !== 'string') return;
-          setVisionModelOverride(newObj.id, {
-            glbKey: match.glbKey,
-            dominantColorHex: match.dominantColorHex,
-            overrideAlbedo: Boolean(match.overrideAlbedo),
-          });
-          if (
-            !verifiedSize &&
-            Array.isArray(match.estimatedSize) &&
-            match.estimatedSize.length === 3
-          ) {
-            updateObject(newObj.id, {
-              kind: match.inferredKind ?? nextKind,
-              size: match.estimatedSize as Vec3,
-            });
-          }
-        })
-        .catch(() => {
-          // Graceful fallback: keep deterministic catalog match
-        });
+          if (matchSeqByObjectRef.current[newObj.id] !== matchSeq) return;
 
-      setSwapToast({
-        objectId: newObj.id,
-        title: `Added: ${product.title}`,
-        seller: product.seller,
-        price: formatCents(product.priceCents, product.currency),
-      });
-      if (swapToastTimerRef.current) {
-        clearTimeout(swapToastTimerRef.current);
-      }
-      swapToastTimerRef.current = setTimeout(() => {
-        setSwapToast(null);
-      }, 4200);
+          const { setVisionModelOverride, addToCart, scene: latestScene } =
+            useSceneStore.getState();
+          const isModernFloorLamp =
+            match &&
+            (match.glbKey === 'lamp' || match.glbKey === 'lampTable') &&
+            /\b(floor\s+lamp|standing\s+lamp|mid[- ]?century|modern|led|globe|arched|column|torchiere|clayton)\b/i.test(
+              product.title
+            );
+
+          if (match && typeof match.glbKey === 'string' && !isModernFloorLamp) {
+            setVisionModelOverride(newObj.id, {
+              glbKey: match.glbKey,
+              dominantColorHex: match.dominantColorHex,
+              overrideAlbedo: Boolean(match.overrideAlbedo),
+            });
+          } else {
+            setVisionModelOverride(newObj.id, null);
+          }
+
+          // Single atomic render: object appears ONCE with its final matched model
+          setScene({
+            ...latestScene,
+            objects: deduplicateSceneObjects([...latestScene.objects, newObj]),
+          });
+          selectObject(newObj.id);
+          addToCart(newObj.id);
+
+          setSwapToast({
+            objectId: newObj.id,
+            title: `Added: ${product.title}`,
+            seller: product.seller,
+            price: formatCents(product.priceCents, product.currency),
+          });
+          if (swapToastTimerRef.current) {
+            clearTimeout(swapToastTimerRef.current);
+          }
+          swapToastTimerRef.current = setTimeout(() => {
+            setSwapToast(null);
+          }, 4200);
+        });
     },
-    [scene, setScene, selectObject, updateObject]
+    [scene, setScene, selectObject]
   );
 
   const handleWizardScenePlanned = useCallback(

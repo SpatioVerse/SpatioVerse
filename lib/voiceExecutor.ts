@@ -749,9 +749,13 @@ function findOpenFloorPosition(
   return [0, 0, 0];
 }
 
+const voiceMatchSeqByObject: Record<string, number> = {};
+
 function triggerVisionGlbMatch(objectId: string, product: ProductRef): void {
-  const { setVisionModelOverride, updateObject } = useSceneStore.getState();
+  const { setVisionModelOverride } = useSceneStore.getState();
   setVisionModelOverride(objectId, null);
+  const matchSeq = (voiceMatchSeqByObject[objectId] ?? 0) + 1;
+  voiceMatchSeqByObject[objectId] = matchSeq;
   void fetch('/api/match-model', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -762,18 +766,21 @@ function triggerVisionGlbMatch(objectId: string, product: ProductRef): void {
   })
     .then((res) => (res.ok ? res.json() : null))
     .then((match) => {
+      if (voiceMatchSeqByObject[objectId] !== matchSeq) return;
       if (!match || typeof match.glbKey !== 'string') return;
+      const isModernFloorLamp =
+        (match.glbKey === 'lamp' || match.glbKey === 'lampTable') &&
+        /\b(floor\s+lamp|standing\s+lamp|mid[- ]?century|modern|led|globe|arched|column|torchiere|clayton)\b/i.test(
+          product.title
+        );
+      if (isModernFloorLamp) return;
+
+      // Refine visual 3D mesh & color ONLY — never shrink/mutate object size 5-10s later
       setVisionModelOverride(objectId, {
         glbKey: match.glbKey,
         dominantColorHex: match.dominantColorHex,
         overrideAlbedo: Boolean(match.overrideAlbedo),
       });
-      if (Array.isArray(match.estimatedSize) && match.estimatedSize.length === 3) {
-        updateObject(objectId, {
-          ...(match.inferredKind ? { kind: match.inferredKind } : {}),
-          size: match.estimatedSize as Vec3,
-        });
-      }
     })
     .catch(() => {
       // Fallback to deterministic catalog match
